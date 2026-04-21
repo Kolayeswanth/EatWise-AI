@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+scikit-learn
+pandas
+numpy
+shap
+joblib
+easyocr
+pillow
+python-multipart
+streamlit
+requests
+matplotlib
+python-dotenv
+google-genai

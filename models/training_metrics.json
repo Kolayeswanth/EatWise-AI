@@ -1,0 +1,38 @@
+{
+  "dataset_path": "C:\\Users\\Kola_Yeswanth\\OneDrive\\Desktop\\fyp\\data\\synthetic_food_safety_dataset.csv",
+  "bundle_path": "C:\\Users\\Kola_Yeswanth\\OneDrive\\Desktop\\fyp\\models\\hybrid_ensemble.joblib",
+  "roc_auc_ovr": 0.9189395046135461,
+  "classification_report": {
+    "0": {
+      "precision": 0.7317073170731707,
+      "recall": 0.5357142857142857,
+      "f1-score": 0.6185567010309279,
+      "support": 56.0
+    },
+    "1": {
+      "precision": 0.643312101910828,
+      "recall": 0.643312101910828,
+      "f1-score": 0.643312101910828,
+      "support": 157.0
+    },
+    "2": {
+      "precision": 0.8509933774834437,
+      "recall": 0.8954703832752613,
+      "f1-score": 0.8726655348047538,
+      "support": 287.0
+    },
+    "accuracy": 0.776,
+    "macro avg": {
+      "precision": 0.7420042654891473,
+      "recall": 0.6914989236334583,
+      "f1-score": 0.7115114459155033,
+      "support": 500.0
+    },
+    "weighted avg": {
+      "precision": 0.7724214181876918,
+      "recall": 0.776,
+      "f1-score": 0.7721883674933927,
+      "support": 500.0
+    }
+  }
+}
