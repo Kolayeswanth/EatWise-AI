@@ -252,6 +252,7 @@ def init_state() -> None:
         "scan_image_mime": "image/jpeg",
         "ocr_source": "fallback",
         "user_id": "",
+        "show_user_id_card": False,
         "profile_loaded": False,
         "profile_edit_mode": False,
         "custom_allergy_input": "",
@@ -577,6 +578,7 @@ def save_profile(api_base: str) -> None:
     else:
         created = api_user_create(api_base, payload)
         st.session_state["user_id"] = str(created.get("id", ""))
+        st.session_state["show_user_id_card"] = True
         st.session_state.profile = {
             "name": str(created.get("name", payload["name"])),
             "age": int(created.get("age", payload["age"]) or payload["age"]),
@@ -648,6 +650,24 @@ def render_step_1(api_base: str) -> None:
 
     has_user = bool(str(st.session_state["user_id"]).strip())
     if has_user and not st.session_state.profile_edit_mode:
+        if st.session_state.get("show_user_id_card"):
+            st.markdown(
+                f"""
+                <div class='stat-card' style='border-color: rgba(109,94,252,.35); background: #f7f5ff;'>
+                    <div class='section-tag'>Account Created</div>
+                    <div style='font-size:.95rem; margin-bottom:.35rem;'>
+                        This is your User ID for next logins.
+                        Save it somewhere safe and keep it private.
+                    </div>
+                    <div style='font-weight:700; font-size:1rem; word-break:break-all;'>{st.session_state['user_id']}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button("I have saved my User ID", type="secondary", use_container_width=True):
+                st.session_state["show_user_id_card"] = False
+                st.rerun()
+
         st.markdown("<div class='section-tag'>Saved Profile</div>", unsafe_allow_html=True)
         st.write(f"**Name:** {st.session_state.profile.get('name', '')}")
         st.write(f"**Age:** {st.session_state.profile.get('age', '')}")
