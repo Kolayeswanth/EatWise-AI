@@ -59,7 +59,9 @@ def get_genai_client(api_key: str):
 def parse_ingredient_text(value: str) -> List[str]:
     seen = set()
     parsed = []
-    for item in re.split(r"[,;\n，、]+", value):
+    normalized_value = value.replace(";", ",").replace("\n", ",").replace("，", ",").replace("、", ",")
+    # Do not split decimal commas like 40,5 or 5,5.
+    for item in re.split(r"(?<!\d),(?!\d)", normalized_value):
         cleaned = item.strip()
         lowered = cleaned.lower()
         if cleaned and lowered not in seen:
@@ -123,7 +125,7 @@ Rules:
 - Remove obvious OCR artifacts.
 - Keep list concise and unique.
 - Detect and normalize ingredients even when text is not in English.
-- If ingredients are in another language, return normalized ingredient names in English.
+- Always return normalized ingredient names in English.
 """.strip()
     try:
         response = client.models.generate_content(model=model, contents=prompt)
@@ -135,6 +137,25 @@ Rules:
     except Exception:
         pass
     return ingredients
+
+
+def sanitize_ingredients(items: List[str]) -> List[str]:
+    cleaned = [str(x).strip() for x in items if str(x).strip()]
+    if not cleaned:
+        return []
+
+    # If OCR/AI returns one long paragraph, split to likely ingredient chunks.
+    if len(cleaned) == 1 and len(cleaned[0]) > 140:
+        cleaned = parse_ingredient_text(cleaned[0])
+
+    deduped: List[str] = []
+    seen = set()
+    for item in cleaned:
+        key = item.lower()
+        if key not in seen:
+            deduped.append(item)
+            seen.add(key)
+    return deduped
 
 
 def translate_ingredients_with_ai(
@@ -350,33 +371,43 @@ def map_risk_inputs() -> Tuple[float, float, float]:
 
 def run_full_prediction(api_base: str, client, model: str, ingredients: List[str]) -> None:
     preferred_language = st.session_state.user_profile.get("preferred_language", "English")
-    current_ingredients = ensure_non_empty_ingredients(ingredients)
+    current_ingredients = ensure_non_empty_ingredients(sanitize_ingredients(ingredients))
+
+    # Keep a canonical (English) ingredient list for model prediction and allergen detection.
+    canonical_ingredients = normalize_ingredients_with_ai(
+        client=client,
+        model=model,
+        ingredients=current_ingredients,
+        raw_text=st.session_state.get("ocr_raw_text", ""),
+    )
+    canonical_ingredients = ensure_non_empty_ingredients(sanitize_ingredients(canonical_ingredients or current_ingredients))
 
     if preferred_language.lower() != "english":
         translated, note = translate_ingredients_with_ai(
             client=client,
             model=model,
-            ingredients=current_ingredients,
+            ingredients=canonical_ingredients,
             target_language=preferred_language,
         )
-        st.session_state.translated_ingredients = translated or current_ingredients
+        st.session_state.translated_ingredients = sanitize_ingredients(translated) or canonical_ingredients
         st.session_state.translation_note = note
-        current_ingredients = st.session_state.translated_ingredients
     else:
-        st.session_state.translated_ingredients = current_ingredients
+        st.session_state.translated_ingredients = canonical_ingredients
         st.session_state.translation_note = "Preferred language is English. Translation skipped."
 
     vhi, cas, erf = map_risk_inputs()
-    debug_log(f"Prediction input ingredients={current_ingredients} vhi={vhi} cas={cas} erf={erf}")
+    debug_log(f"Prediction canonical ingredients={canonical_ingredients}")
+    debug_log(f"Prediction display ingredients={st.session_state.translated_ingredients}")
+    debug_log(f"Prediction input features vhi={vhi} cas={cas} erf={erf}")
 
-    prediction = api_predict_risk(api_base, current_ingredients, vhi=vhi, cas=cas, erf=erf)
+    prediction = api_predict_risk(api_base, canonical_ingredients, vhi=vhi, cas=cas, erf=erf)
     cls = str(prediction.get("risk_classification", ""))
     prob = float(prediction.get("probability", 0.0))
 
     ai_explanation, ai_recs = generate_friendly_extras_with_ai(
         client=client,
         model=model,
-        ingredients=current_ingredients,
+        ingredients=canonical_ingredients,
         risk_classification=cls,
         probability=prob,
     )
@@ -390,7 +421,7 @@ def run_full_prediction(api_base: str, client, model: str, ingredients: List[str
         user_allergies=st.session_state.user_profile.get("allergies", []),
         ai_allergens=st.session_state.ai_allergens,
         allergens=st.session_state.allergens,
-        ingredients=current_ingredients,
+        ingredients=canonical_ingredients,
     )
     st.session_state.last_prediction = prediction
     st.session_state.show_results = True
