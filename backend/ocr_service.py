@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import warnings
 from typing import List, Tuple
 
@@ -10,26 +11,23 @@ import numpy as np
 from backend.ai_service import extract_ingredients_from_image_with_ai
 
 try:
-    import easyocr
-    EASYOCR_AVAILABLE = True
-except ImportError:
-    EASYOCR_AVAILABLE = False
-
-try:
     import pytesseract
     PYTESSERACT_AVAILABLE = True
 except ImportError:
     PYTESSERACT_AVAILABLE = False
 
 
-_easyocr_reader = None
+FALLBACK_INGREDIENTS = ["ingredient detection unavailable"]
 
 
 def check_tesseract_availability() -> bool:
     """Check if Tesseract is available on the system."""
     if not PYTESSERACT_AVAILABLE:
         return False
-    
+
+    if shutil.which("tesseract") is None:
+        return False
+
     try:
         pytesseract.get_tesseract_version()
         return True
@@ -68,22 +66,6 @@ def clean_ingredients(raw_text: str) -> List[str]:
     return deduped
 
 
-def _extract_with_easyocr(image_bytes: bytes) -> Tuple[str, List[str]]:
-    global _easyocr_reader
-
-    if not EASYOCR_AVAILABLE:
-        return "", []
-
-    try:
-        if _easyocr_reader is None:
-            _easyocr_reader = easyocr.Reader(["en"], gpu=False)
-        results = _easyocr_reader.readtext(image_bytes, detail=0, paragraph=True)
-        raw_text = "\n".join(str(item).strip() for item in results if str(item).strip())
-        return raw_text, clean_ingredients(raw_text)
-    except Exception:
-        return "", []
-
-
 def _fallback_to_ai(image_bytes: bytes, raw_text: str = "") -> Tuple[str, List[str]]:
     ai_result = extract_ingredients_from_image_with_ai(image_bytes)
     ai_ingredients = ai_result.get("ingredients", [])
@@ -92,14 +74,10 @@ def _fallback_to_ai(image_bytes: bytes, raw_text: str = "") -> Tuple[str, List[s
     if ai_ingredients:
         return ai_raw_text or raw_text or ", ".join(ai_ingredients), ai_ingredients
 
-    easyocr_text, easyocr_ingredients = _extract_with_easyocr(image_bytes)
-    if easyocr_ingredients:
-        return easyocr_text, easyocr_ingredients
-
     if raw_text.strip():
         return raw_text, clean_ingredients(raw_text)
 
-    return "Unable to extract ingredients from the image.", []
+    return "Unable to extract ingredients from the image.", FALLBACK_INGREDIENTS
 
 
 def extract_ingredients_from_image(image_bytes: bytes) -> Tuple[str, List[str]]:

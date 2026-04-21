@@ -8,7 +8,15 @@ import requests
 import streamlit as st
 from requests import RequestException
 
-API_BASE = os.getenv("API_BASE") or st.secrets.get("API_BASE") or "https://eatwise-ai.onrender.com"
+def get_api_base() -> str:
+    try:
+        secret_api_base = st.secrets.get("API_BASE")
+    except Exception:
+        secret_api_base = None
+    return os.getenv("API_BASE") or secret_api_base or "https://eatwise-ai.onrender.com"
+
+
+API_BASE = get_api_base()
 ROOT = Path(__file__).resolve().parents[1]
 METRICS_PATH = ROOT / "models" / "training_metrics.json"
 
@@ -67,6 +75,11 @@ def render_metric_cards(items: List[tuple]) -> None:
                 f"<div class='risk-card'><div class='muted'>{title}</div><div class='metric' style='color:{color}'>{value}</div></div>",
                 unsafe_allow_html=True,
             )
+
+
+def is_placeholder_ingredients(items: List[str]) -> bool:
+    normalized = [str(item).strip().lower() for item in items if str(item).strip()]
+    return normalized == ["ingredient detection unavailable"]
 
 
 def parse_ingredient_text(value: str) -> List[str]:
@@ -439,9 +452,16 @@ with scan_tab:
                         st.session_state.hidden_ingredients = payload.get("hidden_ingredients", [])
                         st.session_state.ingredient_breakdown = payload.get("ingredient_breakdown", [])
                         st.session_state.ai_allergens = payload.get("ai_allergens", [])
+                        if is_placeholder_ingredients(preferred_ingredients):
+                            preferred_ingredients = []
+                            st.session_state.ai_ingredients = []
+                            st.session_state.ingredients = []
                         if preferred_ingredients:
                             sync_ingredient_editor(preferred_ingredients)
-                        st.success("✅ Extraction completed")
+                        if preferred_ingredients:
+                            st.success("✅ Extraction completed")
+                        else:
+                            st.warning("OCR fallback returned no usable ingredients. Please edit the manual input below.")
 
         st.text_area(
             "Ingredients (editable)",
@@ -467,6 +487,8 @@ with scan_tab:
         allergens: List[str] = st.session_state.allergens
 
         displayed_ingredients = st.session_state.ai_ingredients or ingredients
+        if is_placeholder_ingredients(displayed_ingredients):
+            displayed_ingredients = []
         if displayed_ingredients:
             st.markdown("### 🧾 Extracted Ingredients")
             st.markdown(f"<p class='muted'>{', '.join(displayed_ingredients)}</p>", unsafe_allow_html=True)
@@ -500,8 +522,12 @@ with scan_tab:
 
         predict_clicked = st.button("🚀 Predict Safety Risk", width="stretch")
         if predict_clicked:
+            payload_ingredients = parse_ingredient_text(st.session_state.ingredient_editor) or st.session_state.ai_ingredients or st.session_state.ingredients
+            if is_placeholder_ingredients(payload_ingredients):
+                payload_ingredients = parse_ingredient_text(st.session_state.ingredient_editor)
+
             payload = {
-                "ingredients": parse_ingredient_text(st.session_state.ingredient_editor) or st.session_state.ai_ingredients or st.session_state.ingredients,
+                "ingredients": payload_ingredients,
                 "vhi": vhi,
                 "cas": cas,
                 "erf": erf,

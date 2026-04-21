@@ -20,6 +20,8 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 _client: Optional[genai.Client] = None
 
+FALLBACK_INGREDIENTS = ["ingredient detection unavailable"]
+
 
 COMMON_ALLERGENS = [
     "milk",
@@ -79,6 +81,8 @@ def _fallback_normalize(raw_text: str, fallback_ingredients: List[str]) -> dict:
     source = [item.strip() for item in fallback_ingredients if str(item).strip()]
     if not source and raw_text.strip():
         source = [token.strip() for token in re.split(r"[,;\n]", raw_text) if token.strip()]
+    if not source:
+        source = FALLBACK_INGREDIENTS[:]
     normalized: List[str] = []
     breakdown: List[dict] = []
     hidden: List[str] = []
@@ -171,12 +175,14 @@ Rules:
         data = _extract_json(getattr(response, "text", str(response)))
         raw_text = str(data.get("raw_text", "")).strip()
         ingredients = [str(item).strip() for item in data.get("ingredients", []) if str(item).strip()]
+        if not ingredients:
+            ingredients = FALLBACK_INGREDIENTS[:]
         return {
             "raw_text": raw_text or ", ".join(ingredients),
             "ingredients": ingredients,
         }
     except Exception:
-        return {"raw_text": "", "ingredients": []}
+        return {"raw_text": "", "ingredients": FALLBACK_INGREDIENTS[:]}
 
 
 def analyze_ingredients_with_ai(raw_text: str, fallback_ingredients: List[str]) -> dict:

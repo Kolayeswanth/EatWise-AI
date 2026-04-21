@@ -36,10 +36,14 @@ Hybrid AI demo for food label safety analysis.
 
 - FastAPI
 - Streamlit
-- EasyOCR
+- OpenCV + pytesseract
 - Scikit-learn
 - SHAP
 - Gemini AI
+
+## Deployment note
+
+- Render must install `tesseract-ocr` during build for OCR to work reliably.
 
 ## Results shown in the app
 
