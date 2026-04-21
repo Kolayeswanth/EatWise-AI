@@ -7,7 +7,7 @@ from uuid import uuid4
 from supabase import Client, create_client
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or os.getenv("SUPABASE_KEY", "")
 SUPABASE_TABLE = os.getenv("SUPABASE_TABLE", "users")
 
 _client: Optional[Client] = None
@@ -37,14 +37,31 @@ def _normalize_profile(data: Dict[str, Any]) -> Dict[str, Any]:
     profile = dict(data or {})
     profile["name"] = str(profile.get("name", "")).strip()
     profile["age"] = int(profile.get("age", 0) or 0)
-    profile["preferred_language"] = str(profile.get("preferred_language", "English")).strip() or "English"
-    profile["health_conditions"] = [
-        str(item).strip()
-        for item in profile.get("health_conditions", [])
-        if str(item).strip()
-    ]
+    profile["language"] = str(
+        profile.get("language", profile.get("preferred_language", "English"))
+    ).strip() or "English"
     profile["allergies"] = _normalize_allergies(profile.get("allergies", []))
-    return profile
+    return {
+        "name": profile["name"],
+        "age": profile["age"],
+        "language": profile["language"],
+        "allergies": profile["allergies"],
+    }
+
+
+def _row_to_profile(row: Dict[str, Any]) -> Dict[str, Any]:
+    data = dict(row or {})
+    language = str(data.get("language", data.get("preferred_language", "English"))).strip() or "English"
+    allergies = _normalize_allergies(data.get("allergies", []))
+    return {
+        "id": str(data.get("id", "")),
+        "name": str(data.get("name", "")).strip(),
+        "age": int(data.get("age", 0) or 0),
+        "preferred_language": language,
+        "health_conditions": [],
+        "allergies": allergies,
+        "language": language,
+    }
 
 
 def get_client() -> Client:
@@ -63,7 +80,7 @@ def get_user(user_id: str) -> Dict[str, Any]:
     client = get_client()
     response = client.table(SUPABASE_TABLE).select("*").eq("id", user_id).limit(1).execute()
     rows = response.data or []
-    return rows[0] if rows else {}
+    return _row_to_profile(rows[0]) if rows else {}
 
 
 def create_user(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -73,7 +90,9 @@ def create_user(data: Dict[str, Any]) -> Dict[str, Any]:
 
     response = client.table(SUPABASE_TABLE).insert(profile).execute()
     rows = response.data or []
-    return rows[0] if rows else profile
+    created = _row_to_profile(rows[0]) if rows else _row_to_profile(profile)
+    created["id"] = profile["id"]
+    return created
 
 
 def update_user(user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -83,7 +102,9 @@ def update_user(user_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
     response = client.table(SUPABASE_TABLE).update(profile).eq("id", user_id).execute()
     rows = response.data or []
     if rows:
-        return rows[0]
+        updated = _row_to_profile(rows[0])
+        updated["id"] = user_id
+        return updated
 
     profile["id"] = user_id
-    return profile
+    return _row_to_profile(profile)

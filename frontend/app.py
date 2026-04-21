@@ -618,6 +618,34 @@ def render_step_1(api_base: str) -> None:
     st.subheader("Step 1 - Profile")
     st.caption("Enter your profile to personalize the experience.")
 
+    st.markdown("<div class='section-tag'>Existing account</div>", unsafe_allow_html=True)
+    login_user_id = st.text_input(
+        "Enter user ID to load your saved profile",
+        value=str(st.session_state["user_id"]),
+        placeholder="Paste your user ID here",
+    )
+    if st.button("Load Account", type="secondary", use_container_width=True):
+        if not login_user_id.strip():
+            st.warning("Enter a user ID to continue.")
+        else:
+            try:
+                profile = api_user_get(api_base, login_user_id.strip())
+            except RequestException:
+                st.error("Unable to process. Please try again.")
+            else:
+                st.session_state["user_id"] = str(profile.get("id", login_user_id.strip()))
+                st.session_state.profile = {
+                    "name": str(profile.get("name", "")),
+                    "age": int(profile.get("age", 25) or 25),
+                    "preferred_language": str(profile.get("preferred_language", "English")) or "English",
+                    "health_conditions": [],
+                    "allergies": normalize_allergies(profile.get("allergies", [])),
+                }
+                st.session_state.profile_loaded = True
+                st.session_state.profile_edit_mode = False
+                st.success("Account loaded.")
+                st.rerun()
+
     has_user = bool(str(st.session_state["user_id"]).strip())
     if has_user and not st.session_state.profile_edit_mode:
         st.markdown("<div class='section-tag'>Saved Profile</div>", unsafe_allow_html=True)
@@ -656,6 +684,9 @@ def render_step_1(api_base: str) -> None:
 
         st.markdown("<div class='section-tag'>Current allergies</div>", unsafe_allow_html=True)
         render_chips(normalize_allergies(allergies + [custom_allergy] if custom_allergy.strip() else allergies))
+
+        if st.session_state["user_id"]:
+            st.caption(f"Your account ID: {st.session_state['user_id']}")
 
         col1, col2 = st.columns(2)
         with col1:
