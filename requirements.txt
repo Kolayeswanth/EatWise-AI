@@ -5,7 +5,8 @@ pandas
 numpy
 shap
 joblib
-easyocr
+pytesseract
+opencv-python
 pillow
 python-multipart
 streamlit
