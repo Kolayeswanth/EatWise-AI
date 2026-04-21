@@ -75,6 +75,14 @@ def is_placeholder_ingredients(items: List[str]) -> bool:
     return normalized == ["ingredient detection unavailable"]
 
 
+def is_unavailable_text(text: str) -> bool:
+    value = str(text or "").strip().lower()
+    return value in {
+        "ingredient detection unavailable",
+        "unable to extract ingredients from the image.",
+    }
+
+
 def ensure_non_empty_ingredients(items: List[str]) -> List[str]:
     cleaned = [x for x in items if str(x).strip()]
     if not cleaned:
@@ -141,6 +149,7 @@ Rules:
 
 def sanitize_ingredients(items: List[str]) -> List[str]:
     cleaned = [str(x).strip() for x in items if str(x).strip()]
+    cleaned = [x for x in cleaned if not is_unavailable_text(x)]
     if not cleaned:
         return []
 
@@ -746,6 +755,9 @@ def render_scan_step(api_base: str, client, model: str) -> None:
                     if is_placeholder_ingredients(ingredients):
                         ingredients = []
 
+                    if is_unavailable_text(raw_text):
+                        raw_text = ""
+
                     status.write("Normalizing ingredient names with AI...")
                     ingredients = normalize_ingredients_with_ai(
                         client=client,
@@ -761,7 +773,8 @@ def render_scan_step(api_base: str, client, model: str) -> None:
                         ingredients = [raw_text]
 
                     if not ingredients:
-                        ingredients = [friendly_fallback_message()]
+                        # Keep editor empty for manual correction instead of injecting message as ingredient.
+                        ingredients = []
 
                     st.session_state.ocr_raw_text = raw_text
                     st.session_state.ingredients = payload.get("ingredients", [])

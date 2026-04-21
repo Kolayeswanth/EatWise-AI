@@ -27,6 +27,15 @@ app.add_middleware(
 model = HybridRiskModel()
 
 
+def _is_placeholder_ocr(ingredients: list[str], raw_text: str) -> bool:
+    tokens = [str(x).strip().lower() for x in ingredients if str(x).strip()]
+    if tokens == ["ingredient detection unavailable"]:
+        return True
+    if not tokens and "ingredient detection unavailable" in raw_text.lower():
+        return True
+    return False
+
+
 @app.get("/")
 def health() -> dict:
     return {"status": "ok", "service": "food-safety-api"}
@@ -43,7 +52,7 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeImageResponse:
 
     raw_text, ingredients = extract_ingredients_from_image(content)
 
-    if ingredients:
+    if ingredients and not _is_placeholder_ocr(ingredients, raw_text):
         ai_result = analyze_ingredients_with_ai(raw_text=raw_text, fallback_ingredients=ingredients)
     else:
         ai_result = {

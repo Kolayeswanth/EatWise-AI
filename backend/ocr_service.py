@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import warnings
@@ -21,6 +22,7 @@ except ImportError:
 
 
 FALLBACK_INGREDIENTS = ["ingredient detection unavailable"]
+ENABLE_GEMINI_OCR_FALLBACK = os.getenv("ENABLE_GEMINI_OCR_FALLBACK", "false").lower() == "true"
 
 
 def check_tesseract_availability() -> bool:
@@ -70,6 +72,12 @@ def clean_ingredients(raw_text: str) -> List[str]:
 
 
 def _fallback_to_ai(image_bytes: bytes, raw_text: str = "") -> Tuple[str, List[str]]:
+    if not ENABLE_GEMINI_OCR_FALLBACK:
+        logger.info("Gemini OCR fallback is disabled; returning open-source OCR fallback response")
+        if raw_text.strip():
+            return raw_text, clean_ingredients(raw_text)
+        return "ingredient detection unavailable", []
+
     ai_result = extract_ingredients_from_image_with_ai(image_bytes)
     ai_ingredients = ai_result.get("ingredients", [])
     ai_raw_text = ai_result.get("raw_text", "")
@@ -110,7 +118,10 @@ def extract_ingredients_from_image(image_bytes: bytes) -> Tuple[str, List[str]]:
 
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                raw_text = pytesseract.image_to_string(binary)
+                # Try multiple OCR passes before considering fallback.
+                primary_text = pytesseract.image_to_string(binary, config="--oem 3 --psm 6")
+                secondary_text = pytesseract.image_to_string(gray, config="--oem 3 --psm 11")
+                raw_text = primary_text if len(primary_text.strip()) >= len(secondary_text.strip()) else secondary_text
 
             logger.info("OCR extracted text: %s", raw_text[:500])
 
