@@ -191,6 +191,27 @@ Ingredients: {ingredients}
         return _fallback_explanation(prediction, features)
 
 
+def generate_risk_reasoning(prediction: Dict, features: Dict[str, float], ingredients: List[str]) -> str:
+    prompt = f"""
+You are a food safety analyst.
+Give concise reasoning in 2 short lines:
+1) Why this risk level was predicted
+2) Which factors likely contributed most
+
+Return plain text only.
+
+Prediction: {prediction}
+Features: {features}
+Ingredients: {ingredients}
+""".strip()
+
+    try:
+        text = _call_gemini(prompt).strip()
+        return text if text else _fallback_risk_reasoning(prediction, features)
+    except Exception:
+        return _fallback_risk_reasoning(prediction, features)
+
+
 def generate_recommendations(prediction: Dict, features: Dict[str, float], ingredients: List[str]) -> List[str]:
     prompt = f"""
 You are a food safety advisor.
@@ -223,6 +244,13 @@ def _fallback_explanation(prediction: Dict, features: Dict[str, float]) -> str:
     return (
         f"Risk is {prediction.get('risk_classification', 'unknown').lower()} because the ingredient mix, hygiene level, "
         f"and environmental risk point in that direction."
+    )
+
+
+def _fallback_risk_reasoning(prediction: Dict, features: Dict[str, float]) -> str:
+    return (
+        f"The model predicted {prediction.get('risk_classification', 'unknown')} risk based on ingredient profile and environmental signals. "
+        f"Higher ERF ({features.get('erf', 0):.2f}) and ingredient risk ({features.get('ingredient_risk', 0):.2f}) were key contributors."
     )
 
 

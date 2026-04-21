@@ -28,6 +28,7 @@ class PredictResponse(BaseModel):
     allergens_detected: List[str]
     explanation: str
     ai_explanation: str = ""
+    risk_reasoning: str = ""
     recommendations: List[str] = Field(default_factory=list)
     confidence_percent: float = 0.0
 

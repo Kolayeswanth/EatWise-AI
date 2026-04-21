@@ -41,6 +41,15 @@ if "ai_allergens" not in st.session_state:
     st.session_state.ai_allergens = []
 if "last_prediction" not in st.session_state:
     st.session_state.last_prediction = None
+if "user_profile" not in st.session_state:
+    st.session_state.user_profile = {
+        "name": "",
+        "age": 25,
+        "health_conditions": "",
+        "allergies": [],
+    }
+if "personalized_alert" not in st.session_state:
+    st.session_state.personalized_alert = ""
 
 
 def badge(label: str, variant: str) -> str:
@@ -324,6 +333,33 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+with st.sidebar:
+    st.markdown("### 👤 User Profile")
+    profile_name = st.text_input("Name", value=st.session_state.user_profile.get("name", ""))
+    profile_age = st.number_input("Age", min_value=1, max_value=120, value=int(st.session_state.user_profile.get("age", 25)))
+    profile_health = st.text_input("Health conditions", value=st.session_state.user_profile.get("health_conditions", ""), placeholder="e.g., diabetes, hypertension")
+    allergy_options = [
+        "milk",
+        "egg",
+        "peanut",
+        "tree nut",
+        "soy",
+        "wheat",
+        "gluten",
+        "fish",
+        "shellfish",
+        "sesame",
+    ]
+    profile_allergies = st.multiselect("Allergies", options=allergy_options, default=st.session_state.user_profile.get("allergies", []))
+    mobile_mode = st.toggle("📱 Mobile-friendly layout", value=True)
+
+st.session_state.user_profile = {
+    "name": profile_name.strip(),
+    "age": int(profile_age),
+    "health_conditions": profile_health.strip(),
+    "allergies": [a.lower() for a in profile_allergies],
+}
+
 st.markdown(
     """
     <div class="hero">
@@ -347,7 +383,10 @@ st.markdown(
 scan_tab, results_tab, ai_tab, about_tab = st.tabs(["Scan", "Results", "AI Insights", "About"])
 
 with scan_tab:
-    left, right = st.columns([1.15, 0.95], gap="large")
+    if mobile_mode:
+        left, right = st.columns(1)
+    else:
+        left, right = st.columns([1.15, 0.95], gap="large")
 
     with left:
         st.markdown("<div class='panel'>", unsafe_allow_html=True)
@@ -430,6 +469,14 @@ with scan_tab:
             else:
                 st.session_state.last_prediction = response.json()
 
+                user_allergies = set(st.session_state.user_profile.get("allergies", []))
+                detected_allergens = set([x.lower() for x in st.session_state.ai_allergens + st.session_state.allergens])
+                overlap = sorted(user_allergies.intersection(detected_allergens))
+                if overlap:
+                    st.session_state.personalized_alert = f"Contains {', '.join(overlap)} -> HIGH RISK for you."
+                else:
+                    st.session_state.personalized_alert = ""
+
         if st.session_state.last_prediction:
             result = st.session_state.last_prediction
             cls = result["risk_classification"]
@@ -465,6 +512,8 @@ with scan_tab:
                 unsafe_allow_html=True,
             )
             st.caption(f"💡 {result.get('explanation', '')}")
+            if st.session_state.personalized_alert:
+                st.error(f"🧍 Personalized alert: {st.session_state.personalized_alert}")
 
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -505,6 +554,7 @@ with ai_tab:
     if st.session_state.last_prediction:
         result = st.session_state.last_prediction
         st.markdown(f"<div class='risk-card'><div class='muted'>Simple explanation</div><div style='font-size:1rem; font-weight:600;'>{result.get('ai_explanation', result.get('explanation', ''))}</div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='risk-card'><div class='muted'>Risk reasoning</div><div style='font-size:0.98rem; font-weight:500;'>{result.get('risk_reasoning', '')}</div></div>", unsafe_allow_html=True)
 
         st.markdown("### ✅ Recommendations")
         recommendations = result.get("recommendations", [])
@@ -573,6 +623,12 @@ with about_tab:
     st.markdown("- Backend can be deployed on Render using the provided `Procfile` or `render.yaml`.")
     st.markdown("- Frontend can be deployed on Streamlit Cloud by setting `API_BASE` to the deployed backend URL.")
     st.markdown("- Secrets should be stored as environment variables: `GEMINI_API_KEY`, `API_BASE`.")
+
+    st.divider()
+    st.markdown("### 📱 Mobile Experience")
+    st.markdown("- Enable **Mobile-friendly layout** from the sidebar for vertical sections and larger controls.")
+    st.markdown("- Add this web app to home screen: browser menu -> **Add to Home Screen / Install app**.")
+    st.markdown("- Recommended mobile flow: Scan -> Predict -> Results -> AI Insights.")
     st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("---")

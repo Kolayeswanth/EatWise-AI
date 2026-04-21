@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.ai_service import analyze_ingredients_with_ai, generate_explanation, generate_recommendations
+from backend.ai_service import analyze_ingredients_with_ai, generate_explanation, generate_recommendations, generate_risk_reasoning
 from backend.ml_service import HybridRiskModel
 from backend.ocr_service import extract_ingredients_from_image
 from backend.schemas import AnalyzeImageResponse, ExplainResponse, PredictRequest, PredictResponse
@@ -70,8 +70,10 @@ def predict_risk(payload: PredictRequest) -> PredictResponse:
     )
     prediction = model.predict(features, payload.ingredients)
     ai_explanation = generate_explanation(prediction, features, payload.ingredients)
+    risk_reasoning = generate_risk_reasoning(prediction, features, payload.ingredients)
     recommendations = generate_recommendations(prediction, features, payload.ingredients)
     prediction["ai_explanation"] = ai_explanation
+    prediction["risk_reasoning"] = risk_reasoning
     prediction["recommendations"] = recommendations
     prediction["confidence_percent"] = float(prediction["probability"] * 100)
     return PredictResponse(**prediction)
