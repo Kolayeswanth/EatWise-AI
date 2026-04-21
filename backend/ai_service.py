@@ -22,6 +22,45 @@ _client: Optional[genai.Client] = None
 
 FALLBACK_INGREDIENTS = ["ingredient detection unavailable"]
 
+INGREDIENT_START_PATTERNS = (
+    r"ingredients?",
+    r"composition",
+    r"склад",
+    r"состав",
+)
+
+INGREDIENT_STOP_PATTERNS = (
+    r"may contain",
+    r"contains",
+    r"nutrition",
+    r"nutritional information",
+    r"allergen",
+    r"warning",
+)
+
+NOISE_TOKENS = {
+    "fer",
+    "who",
+    "mac",
+    "nan",
+    "ingred",
+    "bahi",
+    "ingredient",
+    "ingredients",
+    "composition",
+    "contains",
+    "may",
+    "contain",
+    "nutrition",
+    "nutritional",
+    "information",
+    "warning",
+}
+
+KEEP_PHRASES = {
+    "cocoa butter",
+}
+
 COMMON_ALLERGENS = [
     "milk",
     "egg",
@@ -88,24 +127,114 @@ def _call_gemini(prompt: str) -> str:
 
 
 def _extract_ingredient_section(raw_text: str, lines: Optional[List[str]] = None) -> str:
-    text = "\n".join(lines) if lines else raw_text
-    if not text.strip():
+    source_lines = lines or [part for part in re.split(r"\r?\n", raw_text) if part is not None]
+    if not source_lines:
         return ""
 
-    patterns = [
-        r"ingredients?\s*[:\-]\s*(.+)",
-        r"composition\s*[:\-]\s*(.+)",
-        r"contains\s*[:\-]\s*(.+)",
-        r"склад\s*[:\-]\s*(.+)",
-        r"состав\s*[:\-]\s*(.+)",
-    ]
+    collected: List[str] = []
+    started = False
 
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
-        if match:
-            return match.group(1)
+    for raw_line in source_lines:
+        line = str(raw_line).strip()
+        if not line:
+            if started and collected:
+                break
+            continue
 
-    return text
+        lowered = line.lower()
+        if not started:
+            if not any(re.search(rf"\b{pattern}\b", lowered, flags=re.IGNORECASE) for pattern in INGREDIENT_START_PATTERNS):
+                continue
+            started = True
+            for pattern in INGREDIENT_START_PATTERNS:
+                match = re.search(rf"{pattern}\s*[:\-]?\s*(.*)$", line, flags=re.IGNORECASE)
+                if match:
+                    remainder = match.group(1).strip()
+                    if remainder:
+                        collected.append(remainder)
+                    break
+            continue
+
+        if any(re.search(rf"\b{pattern}\b", lowered, flags=re.IGNORECASE) for pattern in INGREDIENT_STOP_PATTERNS):
+            break
+
+        collected.append(line)
+
+    section = "\n".join(collected).strip()
+    if section:
+        return section
+
+    text = "\n".join(str(item).strip() for item in source_lines if str(item).strip())
+    match = re.search(
+        r"(?:ingredients?|composition|склад|состав)\s*[:\-]?\s*(.*?)(?:\n\s*\n|$)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _clean_ingredient_token(token: str) -> str:
+    token = token.lower().strip()
+    token = token.replace("/", " ")
+    token = re.sub(r"\b\d+(?:[.,]\d+)?%?\b", " ", token)
+    token = re.sub(r"[^a-z\s\-]", " ", token)
+    token = re.sub(r"\s+", " ", token).strip(" .,-")
+
+    if not token:
+        return ""
+
+    if len(token) < 3:
+        return ""
+
+    if token in NOISE_TOKENS:
+        return ""
+
+    words = [word for word in token.split() if len(word) >= 3 and word not in NOISE_TOKENS]
+    if not words:
+        return ""
+
+    token = " ".join(words)
+    if len(token.split()) > 6:
+        return ""
+
+    if token in {"ukrainian", "russian"}:
+        return ""
+
+    return token
+
+
+def _normalize_ingredient_token(token: str) -> str:
+    normalized = token.lower().strip()
+
+    replacements = {
+        "lecithins soya": "lecithin",
+        "lecithin soya": "lecithin",
+        "lecithins soy": "lecithin",
+        "soy lecithin": "lecithin",
+        "soya lecithin": "lecithin",
+        "milk powder": "milk",
+        "wheat flour": "wheat",
+        "casein": "milk protein",
+        "whey": "milk protein",
+        "sodium benzoate": "preservative",
+        "potassium sorbate": "preservative",
+        "benzoate": "preservative",
+    }
+
+    for key, value in replacements.items():
+        if key in normalized:
+            normalized = value
+            break
+
+    if normalized in KEEP_PHRASES:
+        return normalized
+
+    if normalized.endswith("s") and len(normalized) > 4 and normalized not in {"cocoa butter"}:
+        singular = normalized[:-1]
+        if singular in KEEP_PHRASES:
+            return singular
+
+    return normalized
 
 
 def extract_ingredients_from_ocr_text(raw_text: str, lines: Optional[List[str]] = None) -> List[str]:
@@ -113,35 +242,49 @@ def extract_ingredients_from_ocr_text(raw_text: str, lines: Optional[List[str]] 
     if not section.strip():
         return []
 
-    normalized = section.replace(";", ",")
-    parts = re.split(r"[,\n\(\)\[\]{}]", normalized)
+    normalized = section.lower().replace(";", ",")
+    normalized = re.sub(r"lecithins?\s*\(\s*soya\s*\)", "lecithin", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"lecithins?\s*\(\s*soy\s*\)", "lecithin", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"lecithins?\s+soya", "lecithin", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"lecithins?\s+soy", "lecithin", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\n+", ",", normalized)
+    parts = re.split(r"[,\(\)\[\]{}]", normalized)
 
     cleaned: List[str] = []
     seen = set()
+
     for part in parts:
-        token = part.strip().lower()
+        token = _clean_ingredient_token(part)
         if not token:
             continue
 
-        token = re.sub(r"\b\d+[\.,]?\d*%?\b", "", token)
-        token = re.sub(r"[^a-zа-яіїєґ0-9\-\s]", "", token, flags=re.IGNORECASE)
-        token = re.sub(r"\s+", " ", token).strip(" .-")
+        if any(re.search(rf"\b{pattern}\b", token, flags=re.IGNORECASE) for pattern in INGREDIENT_STOP_PATTERNS):
+            break
 
-        if not token or len(token) < 2:
-            continue
-        if token in {
-            "ingredients",
-            "composition",
-            "contains",
-            "may contain",
-            "trace",
-            "warning",
-        }:
+        token = _normalize_ingredient_token(token)
+        token = token.strip()
+
+        if not token or len(token) < 3:
             continue
 
-        if token not in seen:
-            cleaned.append(token)
-            seen.add(token)
+        if any(char.isdigit() for char in token):
+            continue
+
+        if not re.fullmatch(r"[a-z\-\s]+", token):
+            continue
+
+        if token in NOISE_TOKENS:
+            continue
+
+        normalized_token = re.sub(r"\s+", " ", token).strip()
+        if normalized_token in seen:
+            continue
+
+        seen.add(normalized_token)
+        cleaned.append(normalized_token)
+
+        if len(cleaned) >= 30:
+            break
 
     return cleaned
 
@@ -161,29 +304,20 @@ def _rule_based_normalize(raw_text: str, fallback_ingredients: List[str]) -> dic
     text = " ".join(source).lower()
 
     for token in source:
-        base = token.lower()
+        base = _normalize_ingredient_token(token.lower())
         for code, name in E_NUMBER_MAP.items():
             if code in base:
                 base = base.replace(code, name)
                 hidden.append(name)
 
-        replacements = {
-            "casein": "milk protein",
-            "whey": "milk protein",
-            "sodium benzoate": "preservative",
-            "potassium sorbate": "preservative",
-            "benzoate": "preservative",
-        }
-
         normalized_name = base
-        for key, value in replacements.items():
-            if key in normalized_name:
-                normalized_name = value
-                if value == "preservative":
-                    hidden.append(value)
+        if normalized_name == "preservative":
+            hidden.append("preservative")
+        if normalized_name == "milk protein":
+            hidden.append("milk protein")
 
         normalized_name = normalized_name.strip(" .")
-        if normalized_name and normalized_name not in normalized:
+        if normalized_name and normalized_name not in normalized and len(normalized) < 30:
             normalized.append(normalized_name)
         breakdown.append({"original": token, "normalized": normalized_name or token})
 
@@ -203,43 +337,8 @@ def _rule_based_normalize(raw_text: str, fallback_ingredients: List[str]) -> dic
 
 def analyze_ingredients_with_ai(raw_text: str, fallback_ingredients: List[str]) -> dict:
     base = _rule_based_normalize(raw_text, fallback_ingredients)
-
-    if not USE_GEMINI:
-        logger.info("Gemini disabled; using rule-based ingredient normalization")
-        return base
-
-    prompt = f"""
-You are a food safety assistant.
-Normalize the ingredient list, identify hidden ingredients, and detect allergens.
-Return ONLY valid JSON:
-{{
-  "ai_ingredients": ["string"],
-  "hidden_ingredients": ["string"],
-  "ai_allergens": ["string"],
-  "ingredient_breakdown": [{{"original": "string", "normalized": "string"}}]
-}}
-
-OCR text:
-{raw_text}
-
-Rule-based ingredients:
-{base.get("ai_ingredients", [])}
-""".strip()
-
-    try:
-        text = _call_gemini(prompt)
-        data = _extract_json(text)
-        if not isinstance(data, dict):
-            raise ValueError("Gemini response was not a JSON object")
-        data.setdefault("ai_ingredients", base.get("ai_ingredients", []))
-        data.setdefault("hidden_ingredients", base.get("hidden_ingredients", []))
-        data.setdefault("ai_allergens", base.get("ai_allergens", []))
-        data.setdefault("ingredient_breakdown", base.get("ingredient_breakdown", []))
-        logger.info("Gemini ingredient normalization success")
-        return data
-    except Exception:
-        logger.exception("Gemini ingredient normalization failed; using rule-based output")
-        return base
+    logger.info("Rule-based ingredient normalization completed")
+    return base
 
 
 def generate_explanation(prediction: Dict, features: Dict[str, float], ingredients: List[str]) -> str:

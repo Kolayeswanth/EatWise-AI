@@ -6,9 +6,9 @@ Hybrid AI assistant for food label safety analysis.
 
 - Scan a food label image
 - Extract ingredients with Azure Vision Read OCR (primary)
-- Normalize ingredients with rule-based logic and optional Gemini enhancement
+- Normalize ingredients with deterministic rule-based logic
 - Predict contamination risk with a hybrid ensemble model
-- Explain the prediction with SHAP + Gemini
+- Explain the prediction with SHAP and optional Gemini narration
 - Guide users through a step-by-step assistant-style Streamlit experience
 
 ## Frontend guided flow
@@ -41,12 +41,12 @@ Hybrid AI assistant for food label safety analysis.
 - Azure Vision Read API
 - Scikit-learn
 - SHAP
-- Gemini AI (optional, non-critical path)
+- Gemini AI (optional, explanation only)
 
 ## Deployment note
 
 - OCR is Azure-primary with bounded polling and a lightweight local text fallback.
-- Gemini is optional for ingredient intelligence and explanations, never required for endpoint success.
+- Gemini is optional for explanations only, never required for ingredient parsing or endpoint success.
 
 ## Results shown in the app
 
@@ -122,5 +122,5 @@ Mobile-friendly usage:
 - Local backend is running.
 - Local frontend is running.
 - OCR pipeline is Azure-primary with fallback that still returns structured output.
-- Gemini is optional and non-blocking; rule-based fallback always runs.
+- Ingredient parsing is deterministic, cleaned, and deduplicated; Gemini is explanation-only.
 - UI is guided, assistant-like, and aligned with the paper.
