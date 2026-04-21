@@ -3,6 +3,26 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
+class UserProfileBase(BaseModel):
+    name: str = ""
+    age: int = Field(0, ge=0, le=120)
+    preferred_language: str = "English"
+    health_conditions: List[str] = Field(default_factory=list)
+    allergies: List[str] = Field(default_factory=list)
+
+
+class UserCreateRequest(UserProfileBase):
+    pass
+
+
+class UserUpdateRequest(UserProfileBase):
+    pass
+
+
+class UserResponse(UserProfileBase):
+    id: str
+
+
 class PredictRequest(BaseModel):
     ingredients: List[str] = Field(default_factory=list)
     vhi: float = Field(..., ge=0.0, le=1.0, description="Vendor Hygiene Index")

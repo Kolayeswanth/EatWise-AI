@@ -11,3 +11,4 @@ requests
 matplotlib
 python-dotenv
 google-genai
+supabase

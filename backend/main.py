@@ -13,9 +13,18 @@ from backend.ai_service import (
     generate_recommendations,
     generate_risk_reasoning,
 )
+from backend.db import create_user, get_user, update_user
 from backend.ml_service import HybridRiskModel
 from backend.ocr_service import extract_ingredients_from_image
-from backend.schemas import AnalyzeImageResponse, ExplainResponse, PredictRequest, PredictResponse
+from backend.schemas import (
+    AnalyzeImageResponse,
+    ExplainResponse,
+    PredictRequest,
+    PredictResponse,
+    UserCreateRequest,
+    UserResponse,
+    UserUpdateRequest,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 logger = logging.getLogger(__name__)
@@ -31,9 +40,51 @@ app.add_middleware(
 )
 
 model = HybridRiskModel()
+
+
 @app.get("/")
 def health() -> dict:
     return {"status": "ok", "service": "food-safety-api"}
+
+
+@app.post("/user/create", response_model=UserResponse)
+def user_create(payload: UserCreateRequest) -> UserResponse:
+    try:
+        created = create_user(payload.dict())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if not created or not created.get("id"):
+        raise HTTPException(status_code=500, detail="Unable to create user profile")
+
+    return UserResponse(**created)
+
+
+@app.get("/user/{user_id}", response_model=UserResponse)
+def user_get(user_id: str) -> UserResponse:
+    try:
+        user = get_user(user_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return UserResponse(**user)
+
+
+@app.put("/user/{user_id}", response_model=UserResponse)
+def user_update(user_id: str, payload: UserUpdateRequest) -> UserResponse:
+    try:
+        updated = update_user(user_id, payload.dict())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    updated["id"] = user_id
+    return UserResponse(**updated)
 
 
 @app.post("/analyze-image", response_model=AnalyzeImageResponse)

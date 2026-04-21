@@ -52,6 +52,8 @@ NOISE_WORDS = {
     "contain",
 }
 
+ALLERGY_CHOICES = ["milk", "wheat", "soy", "egg", "peanut", "tree nut", "gluten", "fish", "shellfish", "sesame"]
+
 
 def get_api_base() -> str:
     try:
@@ -152,6 +154,36 @@ def api_predict_risk(api_base: str, ingredients: List[str], vhi: float, cas: flo
     return response.json()
 
 
+def api_user_create(api_base: str, payload: Dict) -> Dict:
+    response = requests.post(f"{api_base}/user/create", json=payload, timeout=60)
+    response.raise_for_status()
+    return response.json()
+
+
+def api_user_get(api_base: str, user_id: str) -> Dict:
+    response = requests.get(f"{api_base}/user/{user_id}", timeout=60)
+    response.raise_for_status()
+    return response.json()
+
+
+def api_user_update(api_base: str, user_id: str, payload: Dict) -> Dict:
+    response = requests.put(f"{api_base}/user/{user_id}", json=payload, timeout=60)
+    response.raise_for_status()
+    return response.json()
+
+
+def normalize_allergies(values: List[str]) -> List[str]:
+    seen = set()
+    normalized: List[str] = []
+    for value in values:
+        token = str(value).strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        normalized.append(token)
+    return normalized
+
+
 def translate_with_libretranslate(ingredients: List[str], target_language_name: str) -> Tuple[List[str], str]:
     if not ingredients:
         return [], "No ingredients to translate."
@@ -219,6 +251,10 @@ def init_state() -> None:
         "scan_image_bytes": b"",
         "scan_image_mime": "image/jpeg",
         "ocr_source": "fallback",
+        "user_id": "",
+        "profile_loaded": False,
+        "profile_edit_mode": False,
+        "custom_allergy_input": "",
         "ingredients": [],
         "display_ingredients": [],
         "ingredient_editor": "",
@@ -492,42 +528,159 @@ def render_chips(items: List[str]) -> None:
     st.markdown(chips, unsafe_allow_html=True)
 
 
+def profile_payload_from_state() -> Dict:
+    return {
+        "name": st.session_state.profile.get("name", ""),
+        "age": int(st.session_state.profile.get("age", 25)),
+        "preferred_language": st.session_state.profile.get("preferred_language", "English"),
+        "health_conditions": st.session_state.profile.get("health_conditions", []),
+        "allergies": normalize_allergies(st.session_state.profile.get("allergies", [])),
+    }
+
+
+def sync_user_profile(api_base: str) -> None:
+    user_id = str(st.session_state["user_id"]).strip()
+    if not user_id or st.session_state.get("profile_loaded"):
+        return
+
+    try:
+        profile = api_user_get(api_base, user_id)
+    except RequestException:
+        return
+
+    if not profile:
+        return
+
+    st.session_state.profile = {
+        "name": str(profile.get("name", "")),
+        "age": int(profile.get("age", 25) or 25),
+        "preferred_language": str(profile.get("preferred_language", "English")) or "English",
+        "health_conditions": [str(x).strip() for x in profile.get("health_conditions", []) if str(x).strip()],
+        "allergies": normalize_allergies(profile.get("allergies", [])),
+    }
+    st.session_state.profile_loaded = True
+    st.session_state.profile_edit_mode = False
+    st.session_state.custom_allergy_input = ""
+
+
+def save_profile(api_base: str) -> None:
+    payload = profile_payload_from_state()
+    if st.session_state["user_id"]:
+        updated = api_user_update(api_base, st.session_state["user_id"], payload)
+        st.session_state.profile = {
+            "name": str(updated.get("name", payload["name"])),
+            "age": int(updated.get("age", payload["age"]) or payload["age"]),
+            "preferred_language": str(updated.get("preferred_language", payload["preferred_language"])),
+            "health_conditions": [str(x).strip() for x in updated.get("health_conditions", payload["health_conditions"]) if str(x).strip()],
+            "allergies": normalize_allergies(updated.get("allergies", payload["allergies"])),
+        }
+    else:
+        created = api_user_create(api_base, payload)
+        st.session_state["user_id"] = str(created.get("id", ""))
+        st.session_state.profile = {
+            "name": str(created.get("name", payload["name"])),
+            "age": int(created.get("age", payload["age"]) or payload["age"]),
+            "preferred_language": str(created.get("preferred_language", payload["preferred_language"])),
+            "health_conditions": [str(x).strip() for x in created.get("health_conditions", payload["health_conditions"]) if str(x).strip()],
+            "allergies": normalize_allergies(created.get("allergies", payload["allergies"])),
+        }
+
+    st.session_state.profile_loaded = True
+    st.session_state.profile_edit_mode = False
+    st.session_state.custom_allergy_input = ""
+
+
+def merge_allergy(api_base: str, value: str) -> None:
+    allergy = str(value).strip().lower()
+    if not allergy:
+        return
+
+    current = normalize_allergies(st.session_state.profile.get("allergies", []))
+    if allergy in current:
+        return
+
+    current.append(allergy)
+    st.session_state.profile["allergies"] = current
+    st.session_state.custom_allergy_input = ""
+    if st.session_state["user_id"]:
+        saved = api_user_update(api_base, st.session_state["user_id"], profile_payload_from_state())
+        st.session_state.profile["allergies"] = normalize_allergies(saved.get("allergies", current))
+
+
 def step_jump(target_step: int) -> None:
     time.sleep(0.14)
     st.session_state.step = target_step
     st.rerun()
 
 
-def render_step_1() -> None:
+def render_step_1(api_base: str) -> None:
     st.markdown("<div class='panel'>", unsafe_allow_html=True)
     st.subheader("Step 1 - Profile")
     st.caption("Enter your profile to personalize the experience.")
 
-    name = st.text_input("Name", value=st.session_state.profile.get("name", ""), placeholder="Your name")
-    age = st.number_input("Age", min_value=1, max_value=120, value=int(st.session_state.profile.get("age", 25)))
-    allergies = st.multiselect(
-        "Allergies",
-        options=["milk", "egg", "peanut", "tree nut", "soy", "wheat", "gluten", "fish", "shellfish", "sesame"],
-        default=st.session_state.profile.get("allergies", []),
-    )
-    preferred_language = st.selectbox(
-        "Preferred language",
-        options=list(LANGUAGE_CODES.keys()),
-        index=list(LANGUAGE_CODES.keys()).index(st.session_state.profile.get("preferred_language", "English")),
-    )
+    has_user = bool(str(st.session_state["user_id"]).strip())
+    if has_user and not st.session_state.profile_edit_mode:
+        st.markdown("<div class='section-tag'>Saved Profile</div>", unsafe_allow_html=True)
+        st.write(f"**Name:** {st.session_state.profile.get('name', '')}")
+        st.write(f"**Age:** {st.session_state.profile.get('age', '')}")
+        st.write(f"**Language:** {st.session_state.profile.get('preferred_language', 'English')}")
+        st.markdown("<div class='section-tag'>Allergies</div>", unsafe_allow_html=True)
+        render_chips(normalize_allergies(st.session_state.profile.get("allergies", [])))
 
-    if st.button("Next", type="primary", use_container_width=True):
-        if not name.strip():
-            st.warning("Please enter your name.")
-        else:
-            st.session_state.profile = {
-                "name": name.strip(),
-                "age": int(age),
-                "preferred_language": preferred_language,
-                "health_conditions": [],
-                "allergies": [a.lower() for a in allergies],
-            }
-            step_jump(2)
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Next", type="primary", use_container_width=True):
+                step_jump(2)
+        with col2:
+            if st.button("Edit Profile", type="secondary", use_container_width=True):
+                st.session_state.profile_edit_mode = True
+                st.rerun()
+    else:
+        name = st.text_input("Name", value=st.session_state.profile.get("name", ""), placeholder="Your name")
+        age = st.number_input("Age", min_value=1, max_value=120, value=int(st.session_state.profile.get("age", 25)))
+        preferred_language = st.selectbox(
+            "Preferred language",
+            options=list(LANGUAGE_CODES.keys()),
+            index=list(LANGUAGE_CODES.keys()).index(st.session_state.profile.get("preferred_language", "English")),
+        )
+        allergies = st.multiselect(
+            "Allergies",
+            options=ALLERGY_CHOICES,
+            default=normalize_allergies(st.session_state.profile.get("allergies", [])),
+        )
+        custom_allergy = st.text_input(
+            "Add custom allergy",
+            value=st.session_state.custom_allergy_input,
+            placeholder="Example: mustard",
+        )
+
+        st.markdown("<div class='section-tag'>Current allergies</div>", unsafe_allow_html=True)
+        render_chips(normalize_allergies(allergies + [custom_allergy] if custom_allergy.strip() else allergies))
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Save Profile", type="primary", use_container_width=True):
+                if not name.strip():
+                    st.warning("Please enter your name.")
+                else:
+                    st.session_state.profile = {
+                        "name": name.strip(),
+                        "age": int(age),
+                        "preferred_language": preferred_language,
+                        "health_conditions": [],
+                        "allergies": normalize_allergies(allergies + ([custom_allergy] if custom_allergy.strip() else [])),
+                    }
+                    st.session_state.custom_allergy_input = custom_allergy
+                    try:
+                        save_profile(api_base)
+                    except RequestException:
+                        st.error("Unable to process. Please try again.")
+                    else:
+                        step_jump(2)
+        with col2:
+            if has_user and st.button("Cancel", type="secondary", use_container_width=True):
+                st.session_state.profile_edit_mode = False
+                st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -602,7 +755,17 @@ def render_step_3() -> None:
     if ingredients:
         for idx, item in enumerate(ingredients):
             time.sleep(0.01)
-            st.markdown(f"<div class='chip'>{item}</div>", unsafe_allow_html=True)
+            left, right = st.columns([4, 1])
+            with left:
+                st.markdown(f"<div class='chip'>{item}</div>", unsafe_allow_html=True)
+            with right:
+                if st.button("Add to allergies", key=f"add_allergy_{idx}_{item}", use_container_width=True):
+                    try:
+                        merge_allergy(get_api_base(), item)
+                    except RequestException:
+                        st.error("Unable to process. Please try again.")
+                    else:
+                        st.rerun()
     else:
         st.info("No cleaned ingredients are available yet.")
 
@@ -829,6 +992,7 @@ def main() -> None:
     apply_theme()
 
     api_base = get_api_base()
+    sync_user_profile(api_base)
 
     st.markdown(
         """
@@ -843,7 +1007,7 @@ def main() -> None:
     render_progress(st.session_state.step)
 
     if st.session_state.step == 1:
-        render_step_1()
+        render_step_1(api_base)
     elif st.session_state.step == 2:
         render_step_2(api_base)
     elif st.session_state.step == 3:
