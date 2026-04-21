@@ -59,7 +59,7 @@ def get_genai_client(api_key: str):
 def parse_ingredient_text(value: str) -> List[str]:
     seen = set()
     parsed = []
-    for item in value.replace("\n", ",").split(","):
+    for item in re.split(r"[,;\n，、]+", value):
         cleaned = item.strip()
         lowered = cleaned.lower()
         if cleaned and lowered not in seen:
@@ -122,6 +122,8 @@ Rules:
 - Keep food-safe, human-readable ingredient names.
 - Remove obvious OCR artifacts.
 - Keep list concise and unique.
+- Detect and normalize ingredients even when text is not in English.
+- If ingredients are in another language, return normalized ingredient names in English.
 """.strip()
     try:
         response = client.models.generate_content(model=model, contents=prompt)
@@ -691,10 +693,15 @@ def render_scan_step(api_base: str, client, model: str) -> None:
             st.session_state.scan_image_bytes = selected_bytes
             st.session_state.scan_image_mime = selected_mime
 
+            status = st.status("Started scanning your image...", expanded=True)
+            status.write("Getting OCR ready...")
             with st.spinner("Analyzing label..."):
                 try:
+                    status.write("Finding text regions on the label...")
                     payload = api_analyze_image(api_base, selected_name, selected_bytes, selected_mime)
+                    status.write("OCR is taking a moment, refining detected text...")
                 except RequestException as exc:
+                    status.update(label="Scan failed", state="error")
                     st.error("Backend not reachable")
                     st.caption(str(exc))
                     st.session_state.ingredients = []
@@ -708,6 +715,7 @@ def render_scan_step(api_base: str, client, model: str) -> None:
                     if is_placeholder_ingredients(ingredients):
                         ingredients = []
 
+                    status.write("Normalizing ingredient names with AI...")
                     ingredients = normalize_ingredients_with_ai(
                         client=client,
                         model=model,
@@ -736,6 +744,7 @@ def render_scan_step(api_base: str, client, model: str) -> None:
                     debug_log(f"Frontend AI ingredients={ingredients}")
 
                     st.session_state.workflow_step = max(st.session_state.workflow_step, 2)
+                    status.update(label="Scan complete", state="complete")
                     if ingredients:
                         st.success("Label scanned. Please confirm the detected ingredients.")
                     else:
@@ -798,7 +807,6 @@ def render_confirm_step(api_base: str, client, model: str) -> None:
         else:
             st.session_state.ai_ingredients = final_items
             st.session_state.ingredients = final_items
-            st.session_state.ingredient_editor = ", ".join(final_items)
             st.session_state.translated_ingredients = final_items
             st.session_state.workflow_step = max(st.session_state.workflow_step, 3)
             if decision == "Yes, continue":
