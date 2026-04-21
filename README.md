@@ -18,6 +18,12 @@ Hybrid AI demo for food label safety analysis.
 - AI Insights
 - About
 
+## Personalization
+
+- User profile includes name, age, health conditions, and allergies.
+- Profile is stored in Streamlit session state for the current run.
+- Personalized alert is shown when detected allergens match user allergies.
+
 ## Research paper mapping
 
 - Hybrid model: Random Forest + Gradient Boosting + SVM
@@ -65,7 +71,7 @@ Hybrid AI demo for food label safety analysis.
 
 - `GEMINI_API_KEY`
 - `GEMINI_MODEL` (optional, default: `gemini-2.5-flash`)
-- `API_BASE` for the frontend backend URL
+- `API_BASE` for the frontend backend URL (also supported via Streamlit secrets)
 
 ## Run locally
 
@@ -92,8 +98,13 @@ Backend on Render:
 Frontend on Streamlit Cloud:
 
 - Deploy `frontend/app.py`.
-- Set `API_BASE` to the deployed backend URL.
-- Add `GEMINI_API_KEY` as a secret if needed by your deployment flow.
+- Set `API_BASE` to the deployed backend URL in Streamlit secrets.
+- Add `GEMINI_API_KEY` as a secret if your deployment needs direct Gemini calls.
+
+Mobile-friendly usage:
+
+- Turn on **Mobile-friendly layout** from the app sidebar.
+- Use browser menu -> **Add to Home Screen / Install app** for app-like access.
 
 ## Current status
 

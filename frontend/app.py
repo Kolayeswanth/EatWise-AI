@@ -7,7 +7,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-API_BASE = os.getenv("API_BASE", "http://127.0.0.1:8000")
+API_BASE = os.getenv("API_BASE") or st.secrets.get("API_BASE", "http://127.0.0.1:8000")
 ROOT = Path(__file__).resolve().parents[1]
 METRICS_PATH = ROOT / "models" / "training_metrics.json"
 
