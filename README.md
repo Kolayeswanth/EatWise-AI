@@ -11,6 +11,34 @@ Hybrid AI assistant for food label safety analysis.
 - Explain the prediction with SHAP and optional Gemini narration
 - Guide users through a step-by-step assistant-style Streamlit experience
 
+## Ingredient extraction pipeline
+
+- OCR source: Azure Vision Read API (primary), lightweight local fallback if Azure fails.
+- Section targeting: parse only text after Ingredients/INGREDIENTS/Склад markers.
+- Stop rules: stop parsing at May contain, Contains, Nutrition, or paragraph break.
+- Cleaning: lowercase, remove numbers, percentages, and special characters.
+- Splitting: commas, semicolons, and brackets.
+- Noise filtering: drop known OCR garbage tokens and short/non-alphabetic fragments.
+- Deduplication: normalize, strip, lowercase, then deduplicate.
+- Language filtering: keep English ingredient tokens for clean demo output.
+- Normalization: maps common variants (for example lecithins soya -> lecithin, milk powder -> milk, wheat flour -> wheat).
+- Output limit: keep up to 30 clean, human-readable ingredients.
+
+## API response shape
+
+`POST /analyze-image` returns:
+
+- `raw_text`: OCR text from Azure/fallback
+- `source`: OCR source (`azure` or `fallback`)
+- `ingredients`: cleaned deterministic ingredient list
+- `ai_ingredients`: normalized ingredient list (rule-based)
+- `hidden_ingredients`, `allergens`, `ai_allergens`, `ingredient_breakdown`
+
+`POST /predict-risk` returns (backward compatible + standardized fields):
+
+- Existing: `probability`, `risk_classification`, `class_probabilities`, `features`, `allergens_detected`, `explanation`
+- Added: `risk_score`, `risk_level`, `ai_explanation`, `risk_reasoning`, `recommendations`, `confidence_percent`
+
 ## Frontend guided flow
 
 - Login and onboarding
@@ -47,6 +75,7 @@ Hybrid AI assistant for food label safety analysis.
 
 - OCR is Azure-primary with bounded polling and a lightweight local text fallback.
 - Gemini is optional for explanations only, never required for ingredient parsing or endpoint success.
+- Endpoints remain stable: `/analyze-image` and `/predict-risk`.
 
 ## Results shown in the app
 
