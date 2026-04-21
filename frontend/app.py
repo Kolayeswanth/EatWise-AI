@@ -311,7 +311,6 @@ def init_state() -> None:
         "ingredient_editor": "",
         "scan_source": "upload",
         "debug_mode": False,
-        "debug_logs": [],
         "risk_hygiene_choice": "Good",
         "risk_awareness_choice": "Careful",
         "risk_storage_choice": "Clean & refrigerated",
@@ -338,8 +337,6 @@ def init_state() -> None:
 
 def debug_log(message: str) -> None:
     logger.info(message)
-    if st.session_state.get("debug_mode"):
-        st.session_state.debug_logs.append(message)
 
 
 def friendly_fallback_message() -> str:
@@ -347,6 +344,16 @@ def friendly_fallback_message() -> str:
         "I couldn't clearly read all ingredients from the label. "
         "Please review and edit them below so I can analyze accurately."
     )
+
+
+def render_chips(items: List[str], accent: str = "#2ec4ff") -> None:
+    if not items:
+        return
+    chips = "".join(
+        f"<span style='display:inline-block;margin:0 .4rem .45rem 0;padding:.42rem .75rem;border-radius:999px;border:1px solid rgba(160,191,255,.24);background:rgba(255,255,255,.05);color:{accent};font-weight:700;font-size:.92rem;'>{item}</span>"
+        for item in items
+    )
+    st.markdown(chips, unsafe_allow_html=True)
 
 
 RISK_MAP = {
@@ -696,8 +703,8 @@ def render_profile_setup() -> None:
 
 def render_scan_step(api_base: str, client, model: str) -> None:
     st.markdown("<div class='glass'>", unsafe_allow_html=True)
-    st.subheader("Step 1 - Capture or Upload")
-    st.caption("Use camera capture for instant scan or upload a label image.")
+    st.subheader("1. Upload or capture")
+    st.caption("Pick a photo of the label and I’ll handle the rest.")
 
     source_col_1, source_col_2 = st.columns(2)
     with source_col_1:
@@ -734,13 +741,12 @@ def render_scan_step(api_base: str, client, model: str) -> None:
             st.session_state.scan_image_bytes = selected_bytes
             st.session_state.scan_image_mime = selected_mime
 
-            status = st.status("Started scanning your image...", expanded=True)
-            status.write("Getting OCR ready...")
+            status = st.status("Analyzing your food label...", expanded=True)
+            status.write("Reading the label")
             with st.spinner("Analyzing label..."):
                 try:
-                    status.write("Finding text regions on the label...")
+                    status.write("Finding ingredient text")
                     payload = api_analyze_image(api_base, selected_name, selected_bytes, selected_mime)
-                    status.write("OCR is taking a moment, refining detected text...")
                 except RequestException as exc:
                     status.update(label="Scan failed", state="error")
                     st.error("Unable to process. Please try again.")
@@ -750,7 +756,7 @@ def render_scan_step(api_base: str, client, model: str) -> None:
                     st.session_state.ingredient_editor = ""
                 else:
                     raw_text = str(payload.get("raw_text", "")).strip()
-                    ingredients = payload.get("ai_ingredients") or payload.get("ingredients", [])
+                    ingredients = payload.get("ingredients", [])
                     ingredients = [str(x).strip() for x in ingredients if str(x).strip()]
 
                     if is_placeholder_ingredients(ingredients):
@@ -759,43 +765,19 @@ def render_scan_step(api_base: str, client, model: str) -> None:
                     if is_unavailable_text(raw_text):
                         raw_text = ""
 
-                    status.write("Normalizing ingredient names with AI...")
-                    ingredients = normalize_ingredients_with_ai(
-                        client=client,
-                        model=model,
-                        ingredients=ingredients,
-                        raw_text=raw_text,
-                    )
-
-                    if not ingredients and raw_text:
-                        ingredients = parse_ingredient_text(raw_text)
-
-                    if not ingredients and raw_text:
-                        ingredients = [raw_text]
-
-                    if not ingredients:
-                        # Keep editor empty for manual correction instead of injecting message as ingredient.
-                        ingredients = []
-
                     st.session_state.ocr_raw_text = raw_text
-                    st.session_state.ingredients = payload.get("ingredients", [])
+                    st.session_state.ingredients = ingredients
                     st.session_state.ai_ingredients = ingredients
                     st.session_state.hidden_ingredients = payload.get("hidden_ingredients", [])
                     st.session_state.ingredient_breakdown = payload.get("ingredient_breakdown", [])
                     st.session_state.allergens = payload.get("allergens", [])
                     st.session_state.ai_allergens = payload.get("ai_allergens", [])
-                    st.session_state.ingredient_editor = ", ".join(ingredients)
+                    st.session_state.ingredient_editor = "\n".join(ingredients)
                     st.session_state.ocr_source = payload.get("source", "fallback")
-                    debug_log(f"Frontend OCR raw_text={raw_text}")
-                    debug_log(f"Frontend AI ingredients={ingredients}")
-                    debug_log(f"Frontend OCR source={st.session_state.ocr_source}")
 
                     st.session_state.workflow_step = max(st.session_state.workflow_step, 2)
                     status.update(label="Scan complete", state="complete")
-                    if ingredients:
-                        st.success("Label scanned. Please confirm the detected ingredients.")
-                    else:
-                        st.warning(friendly_fallback_message())
+                    st.success("Label scanned. Please confirm the detected ingredients.")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -831,8 +813,10 @@ def render_risk_context() -> None:
 
 def render_confirm_step(api_base: str, client, model: str) -> None:
     st.markdown("<div class='glass'>", unsafe_allow_html=True)
-    st.subheader("Step 2 - Confirm ingredients")
-    st.caption("I've extracted the ingredients. Please review and edit if needed.")
+    st.subheader("2. Here’s what I found")
+    st.caption("Review the ingredient chips, then confirm or edit.")
+
+    render_chips(ensure_non_empty_ingredients(sanitize_ingredients(st.session_state.ai_ingredients or st.session_state.ingredients)))
 
     st.text_area(
         "Detected Ingredients",
@@ -842,9 +826,13 @@ def render_confirm_step(api_base: str, client, model: str) -> None:
     )
 
     missing = st.text_input("Add missing ingredients", placeholder="example: lecithin, emulsifier")
-    decision = st.radio("Are these correct?", options=["Yes, continue", "Edit ingredients"], horizontal=True)
+    action_col_1, action_col_2 = st.columns(2)
+    with action_col_1:
+        confirm_clicked = st.button("Looks good ✅", width="stretch", type="primary")
+    with action_col_2:
+        edit_clicked = st.button("Edit ingredients ✏️", width="stretch", type="secondary")
 
-    if st.button("Save ingredients and analyze", width="stretch", type="primary"):
+    if confirm_clicked or edit_clicked:
         edited = parse_ingredient_text(st.session_state.ingredient_editor)
         missing_items = parse_ingredient_text(missing)
         final_items = edited + [x for x in missing_items if x.lower() not in {i.lower() for i in edited}]
@@ -856,12 +844,12 @@ def render_confirm_step(api_base: str, client, model: str) -> None:
             st.session_state.ingredients = final_items
             st.session_state.translated_ingredients = final_items
             st.session_state.workflow_step = max(st.session_state.workflow_step, 3)
-            if decision == "Yes, continue":
+            if confirm_clicked:
                 st.success("Ingredients confirmed.")
             else:
-                st.info("Edits saved. Continue when ready.")
+                st.info("Edits saved. Preparing analysis.")
 
-            with st.spinner("Analyzing your food label..."):
+            with st.spinner("Checking safety and risk..."):
                 try:
                     run_full_prediction(api_base=api_base, client=client, model=model, ingredients=final_items)
                 except RequestException as exc:
@@ -876,27 +864,26 @@ def render_confirm_step(api_base: str, client, model: str) -> None:
 
 def render_translation_step(client, model: str) -> None:
     st.markdown("<div class='glass'>", unsafe_allow_html=True)
-    st.subheader("Step 3 - Smart translation")
+    st.subheader("3. Ingredient view")
 
     preferred_language = st.session_state.user_profile.get("preferred_language", "English")
     ingredients = st.session_state.translated_ingredients or st.session_state.ai_ingredients
 
     if not ingredients:
-        st.info("Add ingredients in Step 2 to enable translation.")
+        st.info("Confirm ingredients in the previous step to continue.")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
     if preferred_language.lower() == "english":
         st.session_state.translated_ingredients = ingredients
         st.session_state.translation_note = "Preferred language is English. Translation skipped."
-        st.info("Preferred language is English. Using ingredients as-is.")
+        st.info("Using ingredients as-is for your preferred language.")
 
     if st.session_state.translation_note:
         st.caption(st.session_state.translation_note)
 
     if st.session_state.translated_ingredients:
-        st.markdown("**Translated Ingredients**")
-        st.write(", ".join(st.session_state.translated_ingredients))
+        render_chips(st.session_state.translated_ingredients, accent="#8a8fff")
 
     st.session_state.workflow_step = max(st.session_state.workflow_step, 3)
     st.markdown("</div>", unsafe_allow_html=True)
@@ -904,8 +891,8 @@ def render_translation_step(client, model: str) -> None:
 
 def render_analysis_step(api_base: str, client, model: str) -> None:
     st.markdown("<div class='glass'>", unsafe_allow_html=True)
-    st.subheader("Step 4 - Risk analysis")
-    st.caption("EatWise maps these friendly choices to the model behind the scenes.")
+    st.subheader("4. Safety check")
+    st.caption("Checking safety and risk based on your ingredients and profile.")
 
     vhi, cas, erf = map_risk_inputs()
     st.markdown(
@@ -923,7 +910,7 @@ def render_analysis_step(api_base: str, client, model: str) -> None:
         if not ingredients:
             st.warning(friendly_fallback_message())
         else:
-            with st.spinner("Analyzing your food label..."):
+            with st.spinner("Checking safety and risk..."):
                 try:
                     run_full_prediction(api_base=api_base, client=client, model=model, ingredients=ingredients)
                     st.success("Risk analysis complete.")
@@ -954,7 +941,7 @@ def render_results() -> None:
         label = "HIGH RISK"
 
     st.markdown("<div class='glass fade-in'>", unsafe_allow_html=True)
-    st.subheader("Step 5 - Results")
+    st.subheader("Your results")
 
     st.markdown(
         f"""
@@ -967,37 +954,53 @@ def render_results() -> None:
         unsafe_allow_html=True,
     )
 
-    alert = st.session_state.personalized_alert
-    if alert:
-        st.error(f"Personalized Alert: {alert}")
-    else:
-        st.info("No profile-specific allergen conflict detected for this scan.")
-
-    st.markdown("### Ingredients breakdown")
-    translated = st.session_state.translated_ingredients or st.session_state.ai_ingredients
-    st.write(", ".join(ensure_non_empty_ingredients(translated)))
-
-    if st.session_state.hidden_ingredients:
-        st.caption("Hidden ingredients detected: " + ", ".join(st.session_state.hidden_ingredients))
-
-    if st.session_state.ingredient_breakdown:
-        st.dataframe(pd.DataFrame(st.session_state.ingredient_breakdown), width="stretch")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("<div class='risk-card'>", unsafe_allow_html=True)
+        st.markdown("**Key findings**")
+        ingredient_count = len(st.session_state.translated_ingredients or st.session_state.ai_ingredients)
+        st.write(f"Ingredient count: {ingredient_count}")
+        detected_allergens = st.session_state.ai_allergens or st.session_state.allergens
+        if detected_allergens:
+            st.write("Allergens detected: " + ", ".join(detected_allergens))
+        else:
+            st.write("Allergens detected: none found")
+        risk_drivers = result.get("risk_reasoning") or result.get("explanation") or "Risk was estimated from the model inputs and ingredient profile."
+        st.write("Risk drivers: " + risk_drivers)
+        st.markdown("</div>", unsafe_allow_html=True)
+    with col2:
+        st.markdown("<div class='risk-card'>", unsafe_allow_html=True)
+        st.markdown("**Based on your profile**")
+        alert = st.session_state.personalized_alert
+        if alert:
+            st.error(alert)
+        else:
+            st.info("No profile-specific allergen conflict detected for this scan.")
+        st.markdown("</div>", unsafe_allow_html=True)
 
     explanation = result.get("ai_explanation") or result.get("explanation") or "Safety risk is estimated from hygiene, awareness, environment, and ingredient signals."
-    st.markdown("### AI explanation")
-    st.markdown(f"<div class='risk-card'>{explanation}</div>", unsafe_allow_html=True)
+    model_insight = result.get("risk_reasoning") or "The model combined ingredient and context signals to estimate this result."
+    recommendations = result.get("recommendations", []) or [
+        "Prefer products with shorter ingredient lists.",
+        "Avoid known allergens listed in your profile.",
+        "Store food safely and follow package instructions.",
+    ]
 
-    recommendations = result.get("recommendations", [])
-    if not recommendations:
-        recommendations = [
-            "Prefer products with shorter ingredient lists.",
-            "Avoid known allergens listed in your profile.",
-            "Store food safely and follow package instructions.",
-        ]
+    st.markdown("<div class='risk-card'>", unsafe_allow_html=True)
+    st.markdown("**Model Insight**")
+    st.write(model_insight)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("### Recommendations")
-    for rec in recommendations:
+    st.markdown("<div class='risk-card'>", unsafe_allow_html=True)
+    st.markdown("**AI Explanation**")
+    st.write(explanation)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("<div class='risk-card'>", unsafe_allow_html=True)
+    st.markdown("**Recommendations**")
+    for rec in recommendations[:4]:
         st.markdown(f"- {rec}")
+    st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1058,7 +1061,6 @@ def main() -> None:
                 "scan_image_name",
                 "scan_image_bytes",
                 "show_results",
-                "debug_logs",
             ]:
                 if key in st.session_state:
                     if isinstance(st.session_state[key], list):
@@ -1101,26 +1103,24 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    render_scan_step(api_base=api_base, client=gemini_client, model=gemini_model)
-    render_risk_context()
-    render_confirm_step(api_base=api_base, client=gemini_client, model=gemini_model)
-    render_translation_step(client=gemini_client, model=gemini_model)
-    render_analysis_step(api_base=api_base, client=gemini_client, model=gemini_model)
-    render_results()
-    render_metrics_panel(training_metrics)
+    if st.session_state.workflow_step <= 1:
+        render_scan_step(api_base=api_base, client=gemini_client, model=gemini_model)
+    elif st.session_state.workflow_step == 2:
+        render_confirm_step(api_base=api_base, client=gemini_client, model=gemini_model)
+    elif st.session_state.workflow_step == 3:
+        render_analysis_step(api_base=api_base, client=gemini_client, model=gemini_model)
+        render_results()
+    else:
+        render_results()
 
-    if st.session_state.debug_mode:
-        with st.expander("Debug logs", expanded=True):
-            if st.session_state.debug_logs:
-                st.code("\n".join(st.session_state.debug_logs), language="text")
-            else:
-                st.caption("No debug logs yet.")
+    if st.session_state.workflow_step >= 2:
+        render_risk_context()
 
     with st.expander("About this assistant", expanded=False):
-        st.markdown("- Guided flow: Login -> Profile -> Scan -> Confirm -> Translate -> Analyze -> Result")
-        st.markdown("- OCR source: backend /analyze-image with AI fallback")
+        st.markdown("- Guided flow: Upload -> Review -> Analyze -> Result")
+        st.markdown("- OCR source: backend /analyze-image")
         st.markdown("- Risk source: backend /predict-risk")
-        st.markdown("- AI usage: ingredient normalization, translation, explanation, recommendations")
+        st.markdown("- AI usage: translation, explanation, recommendations")
 
     st.caption("Backend API: configurable with API_BASE | Gemini optional in frontend | Mobile-first guided flow")
 
