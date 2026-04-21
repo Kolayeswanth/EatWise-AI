@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import os
 import re
+from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 from google import genai
+from google.genai import types
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
@@ -73,19 +76,19 @@ def _extract_json(text: str) -> dict:
 
 
 def _fallback_normalize(raw_text: str, fallback_ingredients: List[str]) -> dict:
-    source = fallback_ingredients or [raw_text]
+    source = [item.strip() for item in fallback_ingredients if str(item).strip()]
+    if not source and raw_text.strip():
+        source = [token.strip() for token in re.split(r"[,;\n]", raw_text) if token.strip()]
     normalized: List[str] = []
     breakdown: List[dict] = []
     hidden: List[str] = []
     allergens: List[str] = []
 
     text = " ".join(source).lower()
-    tokens = [token.strip() for token in re.split(r"[,;\n]", text) if token.strip()]
-    if not tokens:
-        tokens = [text.strip()] if text.strip() else []
+    tokens = source
 
     for token in tokens:
-        base = token
+        base = token.lower()
         for code, name in E_NUMBER_MAP.items():
             if code in base:
                 base = base.replace(code, name)
@@ -130,6 +133,50 @@ def _call_gemini(prompt: str) -> str:
     if text:
         return text
     return str(response)
+
+
+def extract_ingredients_from_image_with_ai(image_bytes: bytes) -> dict:
+    prompt = """
+You are a food-label OCR assistant.
+
+Read the label image and extract the ingredient list as accurately as possible.
+Return ONLY valid JSON with this schema:
+{
+  "raw_text": "string",
+  "ingredients": ["string"]
+}
+
+Rules:
+- Focus on ingredients or composition text from the package.
+- Preserve ingredient names, but normalize obvious OCR mistakes when needed.
+- If the image does not clearly show a label, return the best visible text and an empty ingredients list.
+""".strip()
+
+    try:
+        image = Image.open(BytesIO(image_bytes)).convert("RGB")
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        image_part = types.Part.from_bytes(data=buffer.getvalue(), mime_type="image/png")
+        response = _get_client().models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[
+                types.UserContent(
+                    parts=[
+                        types.Part.from_text(text=prompt),
+                        image_part,
+                    ]
+                )
+            ],
+        )
+        data = _extract_json(getattr(response, "text", str(response)))
+        raw_text = str(data.get("raw_text", "")).strip()
+        ingredients = [str(item).strip() for item in data.get("ingredients", []) if str(item).strip()]
+        return {
+            "raw_text": raw_text or ", ".join(ingredients),
+            "ingredients": ingredients,
+        }
+    except Exception:
+        return {"raw_text": "", "ingredients": []}
 
 
 def analyze_ingredients_with_ai(raw_text: str, fallback_ingredients: List[str]) -> dict:

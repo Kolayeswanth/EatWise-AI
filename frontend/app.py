@@ -6,6 +6,7 @@ from typing import List
 import pandas as pd
 import requests
 import streamlit as st
+from requests import RequestException
 
 API_BASE = os.getenv("API_BASE") or st.secrets.get("API_BASE") or "https://eatwise-ai.onrender.com"
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +51,8 @@ if "user_profile" not in st.session_state:
     }
 if "personalized_alert" not in st.session_state:
     st.session_state.personalized_alert = ""
+if "ingredient_editor" not in st.session_state:
+    st.session_state.ingredient_editor = ""
 
 
 def badge(label: str, variant: str) -> str:
@@ -64,6 +67,25 @@ def render_metric_cards(items: List[tuple]) -> None:
                 f"<div class='risk-card'><div class='muted'>{title}</div><div class='metric' style='color:{color}'>{value}</div></div>",
                 unsafe_allow_html=True,
             )
+
+
+def parse_ingredient_text(value: str) -> List[str]:
+    seen = set()
+    parsed = []
+    for item in value.replace("\n", ",").split(","):
+        cleaned = item.strip()
+        if cleaned and cleaned.lower() not in seen:
+            parsed.append(cleaned)
+            seen.add(cleaned.lower())
+    return parsed
+
+
+def sync_ingredient_editor(preferred: List[str]) -> None:
+    st.session_state.ingredient_editor = ", ".join(preferred)
+
+
+if not st.session_state.ingredient_editor and (st.session_state.ai_ingredients or st.session_state.ingredients):
+    sync_ingredient_editor(st.session_state.ai_ingredients or st.session_state.ingredients)
 
 st.markdown(
     """
@@ -384,7 +406,8 @@ scan_tab, results_tab, ai_tab, about_tab = st.tabs(["Scan", "Results", "AI Insig
 
 with scan_tab:
     if mobile_mode:
-        left, right = st.columns(1)
+        left = st.container()
+        right = st.container()
     else:
         left, right = st.columns([1.15, 0.95], gap="large")
 
@@ -395,36 +418,60 @@ with scan_tab:
         uploaded = st.file_uploader("Drop image or browse", type=["png", "jpg", "jpeg", "webp"])
 
         if uploaded is not None:
-            st.image(uploaded, caption="Uploaded label", use_container_width=True)
-            extract_clicked = st.button("🔎 Extract Ingredients", use_container_width=True)
+            st.image(uploaded, caption="Uploaded label", width="stretch")
+            extract_clicked = st.button("🔎 Extract Ingredients", width="stretch")
             if extract_clicked:
-                loading_box = st.empty()
-                loading_box.markdown("<div class='loader-wrap'><div class='loader'></div>Reading label with OCR...</div>", unsafe_allow_html=True)
-                files = {"file": (uploaded.name, uploaded.getvalue(), uploaded.type)}
-                response = requests.post(f"{API_BASE}/analyze-image", files=files, timeout=180)
-                loading_box.empty()
+                with st.spinner("Analyzing..."):
+                    try:
+                        files = {"file": (uploaded.name, uploaded.getvalue(), uploaded.type)}
+                        response = requests.post(f"{API_BASE}/analyze-image", files=files, timeout=180)
+                        response.raise_for_status()
+                    except RequestException as exc:
+                        st.error("Backend not reachable")
+                        st.caption(str(exc))
+                    else:
+                        payload = response.json()
+                        preferred_ingredients = payload.get("ai_ingredients") or payload.get("ingredients", [])
+                        st.session_state.ingredients = payload.get("ingredients", [])
+                        st.session_state.allergens = payload.get("allergens", [])
+                        st.session_state.ocr_raw_text = payload.get("raw_text", "")
+                        st.session_state.ai_ingredients = payload.get("ai_ingredients", [])
+                        st.session_state.hidden_ingredients = payload.get("hidden_ingredients", [])
+                        st.session_state.ingredient_breakdown = payload.get("ingredient_breakdown", [])
+                        st.session_state.ai_allergens = payload.get("ai_allergens", [])
+                        if preferred_ingredients:
+                            sync_ingredient_editor(preferred_ingredients)
+                        st.success("✅ Extraction completed")
 
-                if response.ok:
-                    payload = response.json()
-                    st.session_state.ingredients = payload.get("ingredients", [])
-                    st.session_state.allergens = payload.get("allergens", [])
-                    st.session_state.ocr_raw_text = payload.get("raw_text", "")
-                    st.session_state.ai_ingredients = payload.get("ai_ingredients", [])
-                    st.session_state.hidden_ingredients = payload.get("hidden_ingredients", [])
-                    st.session_state.ingredient_breakdown = payload.get("ingredient_breakdown", [])
-                    st.session_state.ai_allergens = payload.get("ai_allergens", [])
-                    st.success("✅ Extraction completed")
-                else:
-                    st.error(f"OCR failed: {response.text}")
+        st.text_area(
+            "Ingredients (editable)",
+            key="ingredient_editor",
+            height=120,
+            placeholder="milk powder, sugar, cocoa butter",
+            help="Paste or edit ingredients manually if label extraction is incomplete.",
+        )
+        manual_apply = st.button("Use These Ingredients", width="stretch")
+        if manual_apply:
+            manual_ingredients = parse_ingredient_text(st.session_state.ingredient_editor)
+            st.session_state.ingredients = manual_ingredients
+            st.session_state.ai_ingredients = manual_ingredients
+            st.session_state.hidden_ingredients = []
+            st.session_state.ai_allergens = []
+            st.session_state.ingredient_breakdown = []
+            if manual_ingredients:
+                st.success("Ingredients updated")
+            else:
+                st.info("Add at least one ingredient to continue.")
 
         ingredients: List[str] = st.session_state.ingredients
         allergens: List[str] = st.session_state.allergens
 
-        if ingredients:
+        displayed_ingredients = st.session_state.ai_ingredients or ingredients
+        if displayed_ingredients:
             st.markdown("### 🧾 Extracted Ingredients")
-            st.markdown(f"<p class='muted'>{', '.join(ingredients)}</p>", unsafe_allow_html=True)
+            st.markdown(f"<p class='muted'>{', '.join(displayed_ingredients)}</p>", unsafe_allow_html=True)
         else:
-            st.markdown("<p class='muted'>No ingredients detected yet. Upload an image and extract ingredients.</p>", unsafe_allow_html=True)
+            st.info("Upload a label image or paste ingredients manually to continue.")
 
         if st.session_state.ai_ingredients:
             st.markdown("### 🤖 Smart Ingredient Breakdown")
@@ -451,31 +498,37 @@ with scan_tab:
         cas = st.slider("Consumer Awareness Score (CAS)", 0.0, 1.0, 0.55, 0.01)
         erf = st.slider("Environmental Risk Factor (ERF)", 0.0, 1.0, 0.5, 0.01)
 
-        predict_clicked = st.button("🚀 Predict Safety Risk", use_container_width=True)
+        predict_clicked = st.button("🚀 Predict Safety Risk", width="stretch")
         if predict_clicked:
-            loading_box = st.empty()
-            loading_box.markdown("<div class='loader-wrap'><div class='loader'></div>Running hybrid model prediction...</div>", unsafe_allow_html=True)
             payload = {
-                "ingredients": st.session_state.ingredients,
+                "ingredients": parse_ingredient_text(st.session_state.ingredient_editor) or st.session_state.ai_ingredients or st.session_state.ingredients,
                 "vhi": vhi,
                 "cas": cas,
                 "erf": erf,
             }
-            response = requests.post(f"{API_BASE}/predict-risk", json=payload, timeout=60)
-            loading_box.empty()
-
-            if not response.ok:
-                st.error(f"Prediction failed: {response.text}")
+            if not payload["ingredients"]:
+                st.info("Add ingredients manually or extract them from an image before predicting risk.")
             else:
-                st.session_state.last_prediction = response.json()
+                with st.spinner("Analyzing..."):
+                    try:
+                        response = requests.post(f"{API_BASE}/predict-risk", json=payload, timeout=60)
+                        response.raise_for_status()
+                    except RequestException as exc:
+                        st.error("Backend not reachable")
+                        st.caption(str(exc))
+                    else:
+                        st.session_state.ingredients = payload["ingredients"]
+                        if not st.session_state.ai_ingredients:
+                            st.session_state.ai_ingredients = payload["ingredients"]
+                        st.session_state.last_prediction = response.json()
 
-                user_allergies = set(st.session_state.user_profile.get("allergies", []))
-                detected_allergens = set([x.lower() for x in st.session_state.ai_allergens + st.session_state.allergens])
-                overlap = sorted(user_allergies.intersection(detected_allergens))
-                if overlap:
-                    st.session_state.personalized_alert = f"Contains {', '.join(overlap)} -> HIGH RISK for you."
-                else:
-                    st.session_state.personalized_alert = ""
+                        user_allergies = set(st.session_state.user_profile.get("allergies", []))
+                        detected_allergens = set([x.lower() for x in st.session_state.ai_allergens + st.session_state.allergens])
+                        overlap = sorted(user_allergies.intersection(detected_allergens))
+                        if overlap:
+                            st.session_state.personalized_alert = f"Contains {', '.join(overlap)} -> HIGH RISK for you."
+                        else:
+                            st.session_state.personalized_alert = ""
 
         if st.session_state.last_prediction:
             result = st.session_state.last_prediction
@@ -564,7 +617,7 @@ with ai_tab:
         st.markdown("### 🧾 Smart Ingredient Breakdown")
         breakdown = st.session_state.ingredient_breakdown
         if breakdown:
-            st.dataframe(pd.DataFrame(breakdown), use_container_width=True)
+            st.dataframe(pd.DataFrame(breakdown), width="stretch")
         else:
             st.info("Run OCR first to see the smart ingredient breakdown.")
     else:
@@ -610,7 +663,7 @@ with about_tab:
             ],
         }
     )
-    st.dataframe(paper_map, use_container_width=True, hide_index=True)
+    st.dataframe(paper_map, width="stretch", hide_index=True)
 
     st.markdown("### Paper-Linked Results")
     st.markdown("- Accuracy: ~94.6% from the research paper reference")

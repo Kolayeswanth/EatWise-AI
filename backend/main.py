@@ -40,22 +40,17 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeImageResponse:
         raise HTTPException(status_code=400, detail="Empty image file.")
 
     raw_text, ingredients = extract_ingredients_from_image(content)
-    
-    # If OCR failed, return response with fallback message and empty ingredients
-    if not ingredients and raw_text:
-        # raw_text contains fallback error message
-        return AnalyzeImageResponse(
-            raw_text=raw_text,
-            ingredients=[],
-            ai_ingredients=[],
-            hidden_ingredients=[],
-            allergens=[],
-            ai_allergens=[],
-            ingredient_breakdown=[],
-        )
-    
-    ai_result = analyze_ingredients_with_ai(raw_text=raw_text, fallback_ingredients=ingredients)
-    ai_ingredients = ai_result.get("ai_ingredients", ingredients)
+
+    if ingredients:
+        ai_result = analyze_ingredients_with_ai(raw_text=raw_text, fallback_ingredients=ingredients)
+    else:
+        ai_result = {
+            "ai_ingredients": [],
+            "hidden_ingredients": [],
+            "ai_allergens": [],
+            "ingredient_breakdown": [],
+        }
+    ai_ingredients = ai_result.get("ai_ingredients", ingredients) or ingredients
     hidden_ingredients = ai_result.get("hidden_ingredients", [])
     ai_allergens = ai_result.get("ai_allergens", [])
     ingredient_breakdown = ai_result.get("ingredient_breakdown", [])

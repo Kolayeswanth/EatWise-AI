@@ -14,3 +14,4 @@ requests
 matplotlib
 python-dotenv
 google-genai
+easyocr
