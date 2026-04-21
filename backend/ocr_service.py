@@ -5,10 +5,12 @@ import os
 import re
 import shutil
 import warnings
+from io import BytesIO
 from typing import List, Tuple
 
 import cv2
 import numpy as np
+from PIL import Image
 
 from backend.ai_service import extract_ingredients_from_image_with_ai
 
@@ -20,9 +22,112 @@ try:
 except ImportError:
     PYTESSERACT_AVAILABLE = False
 
+try:
+    from rapidocr import RapidOCR
+    RAPIDOCR_AVAILABLE = True
+except ImportError:
+    RAPIDOCR_AVAILABLE = False
+
+
+_rapidocr_engine = None
+
 
 FALLBACK_INGREDIENTS = ["ingredient detection unavailable"]
 ENABLE_GEMINI_OCR_FALLBACK = os.getenv("ENABLE_GEMINI_OCR_FALLBACK", "false").lower() == "true"
+TESSERACT_LANGS = os.getenv("TESSERACT_LANGS", "eng+ukr")
+
+
+def _prepare_ocr_images(img: np.ndarray) -> List[np.ndarray]:
+    """Build multiple OCR-ready variants to improve detection on dense food labels."""
+    variants: List[np.ndarray] = []
+
+    scale = 2
+    resized = cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+
+    denoised = cv2.fastNlMeansDenoising(gray, None, 20, 7, 21)
+    sharpen_kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+    sharpened = cv2.filter2D(denoised, -1, sharpen_kernel)
+
+    adaptive = cv2.adaptiveThreshold(
+        sharpened,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        31,
+        11,
+    )
+    otsu = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+
+    variants.extend([gray, denoised, sharpened, adaptive, otsu])
+    return variants
+
+
+def _ocr_with_tesseract(image: np.ndarray) -> str:
+    """Run several Tesseract passes and keep the strongest text result."""
+    configs = [
+        "--oem 3 --psm 6",
+        "--oem 3 --psm 11",
+        "--oem 3 --psm 12",
+        "--oem 3 --psm 3",
+    ]
+
+    best_text = ""
+    best_score = 0
+
+    for variant in _prepare_ocr_images(image):
+        for config in configs:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                candidate = pytesseract.image_to_string(variant, lang=TESSERACT_LANGS, config=config)
+
+            cleaned = candidate.strip()
+            score = len(cleaned)
+            if score > best_score:
+                best_score = score
+                best_text = candidate
+
+    return best_text
+
+
+def _get_rapidocr_engine():
+    global _rapidocr_engine
+    if _rapidocr_engine is None and RAPIDOCR_AVAILABLE:
+        _rapidocr_engine = RapidOCR()
+    return _rapidocr_engine
+
+
+def _ocr_with_rapidocr(image_bytes: bytes) -> str:
+    """Use RapidOCR as a stronger open-source fallback when Tesseract misses the text."""
+    engine = _get_rapidocr_engine()
+    if engine is None:
+        return ""
+
+    try:
+        image = Image.open(BytesIO(image_bytes)).convert("RGB")
+        result = engine(image)
+
+        if result is None:
+            return ""
+
+        txts = None
+        if hasattr(result, "txts"):
+            txts = result.txts
+        elif isinstance(result, tuple) and result:
+            first = result[0]
+            if hasattr(first, "txts"):
+                txts = first.txts
+            elif isinstance(first, (list, tuple)) and len(first) >= 2:
+                txts = [item[1] for item in first if isinstance(item, (list, tuple)) and len(item) >= 2]
+
+        if not txts:
+            return ""
+
+        lines = [str(text).strip() for text in txts if str(text).strip()]
+        return "\n".join(lines)
+    except Exception:
+        logger.exception("RapidOCR extraction failed")
+        return ""
 
 
 def check_tesseract_availability() -> bool:
@@ -72,6 +177,11 @@ def clean_ingredients(raw_text: str) -> List[str]:
 
 
 def _fallback_to_ai(image_bytes: bytes, raw_text: str = "") -> Tuple[str, List[str]]:
+    rapidocr_text = _ocr_with_rapidocr(image_bytes)
+    if rapidocr_text.strip():
+        logger.info("RapidOCR extracted text: %s", rapidocr_text[:500])
+        return rapidocr_text, clean_ingredients(rapidocr_text)
+
     if not ENABLE_GEMINI_OCR_FALLBACK:
         logger.info("Gemini OCR fallback is disabled; returning open-source OCR fallback response")
         if raw_text.strip():
@@ -113,15 +223,7 @@ def extract_ingredients_from_image(image_bytes: bytes) -> Tuple[str, List[str]]:
             if img is None:
                 return _fallback_to_ai(image_bytes)
 
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            _, binary = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY)
-
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                # Try multiple OCR passes before considering fallback.
-                primary_text = pytesseract.image_to_string(binary, config="--oem 3 --psm 6")
-                secondary_text = pytesseract.image_to_string(gray, config="--oem 3 --psm 11")
-                raw_text = primary_text if len(primary_text.strip()) >= len(secondary_text.strip()) else secondary_text
+            raw_text = _ocr_with_tesseract(img)
 
             logger.info("OCR extracted text: %s", raw_text[:500])
 
