@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import json
 import os
 import re
@@ -19,6 +20,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 _client: Optional[genai.Client] = None
+logger = logging.getLogger(__name__)
 
 FALLBACK_INGREDIENTS = ["ingredient detection unavailable"]
 
@@ -177,11 +179,13 @@ Rules:
         ingredients = [str(item).strip() for item in data.get("ingredients", []) if str(item).strip()]
         if not ingredients:
             ingredients = FALLBACK_INGREDIENTS[:]
+        logger.info("Gemini OCR response: raw_text=%s ingredients=%s", raw_text[:500], ingredients)
         return {
             "raw_text": raw_text or ", ".join(ingredients),
             "ingredients": ingredients,
         }
     except Exception:
+        logger.exception("Gemini OCR extraction failed")
         return {"raw_text": "", "ingredients": FALLBACK_INGREDIENTS[:]}
 
 
@@ -220,8 +224,15 @@ Rules:
         data.setdefault("hidden_ingredients", [])
         data.setdefault("ai_allergens", [])
         data.setdefault("ingredient_breakdown", [])
+        logger.info(
+            "Gemini ingredient analysis: ai_ingredients=%s hidden=%s allergens=%s",
+            data.get("ai_ingredients", []),
+            data.get("hidden_ingredients", []),
+            data.get("ai_allergens", []),
+        )
         return data
     except Exception:
+        logger.exception("Gemini ingredient normalization failed; using fallback normalization")
         return _fallback_normalize(raw_text, fallback_ingredients)
 
 

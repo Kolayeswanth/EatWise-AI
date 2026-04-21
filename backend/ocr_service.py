@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 import warnings
@@ -9,6 +10,8 @@ import cv2
 import numpy as np
 
 from backend.ai_service import extract_ingredients_from_image_with_ai
+
+logger = logging.getLogger(__name__)
 
 try:
     import pytesseract
@@ -71,6 +74,12 @@ def _fallback_to_ai(image_bytes: bytes, raw_text: str = "") -> Tuple[str, List[s
     ai_ingredients = ai_result.get("ingredients", [])
     ai_raw_text = ai_result.get("raw_text", "")
 
+    logger.info(
+        "OCR fallback: raw_text=%s ai_ingredients=%s",
+        (ai_raw_text or raw_text)[:500],
+        ai_ingredients,
+    )
+
     if ai_ingredients:
         return ai_raw_text or raw_text or ", ".join(ai_ingredients), ai_ingredients
 
@@ -103,10 +112,13 @@ def extract_ingredients_from_image(image_bytes: bytes) -> Tuple[str, List[str]]:
                 warnings.simplefilter("ignore")
                 raw_text = pytesseract.image_to_string(binary)
 
+            logger.info("OCR extracted text: %s", raw_text[:500])
+
             ingredients = clean_ingredients(raw_text)
             if ingredients:
                 return raw_text, ingredients
         except Exception:
+            logger.exception("OCR extraction failed")
             raw_text = ""
 
     return _fallback_to_ai(image_bytes, raw_text=raw_text)

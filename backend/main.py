@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
@@ -11,6 +12,7 @@ from backend.ocr_service import extract_ingredients_from_image
 from backend.schemas import AnalyzeImageResponse, ExplainResponse, PredictRequest, PredictResponse
 
 ROOT = Path(__file__).resolve().parents[1]
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Food Safety Risk Prediction API", version="1.0.0")
 
@@ -55,6 +57,17 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeImageResponse:
     ai_allergens = ai_result.get("ai_allergens", [])
     ingredient_breakdown = ai_result.get("ingredient_breakdown", [])
 
+    logger.info(
+        "Analyze image input: raw_text=%s ingredients=%s ai_result=%s",
+        raw_text[:500],
+        ingredients,
+        {
+            "ai_ingredients": ai_ingredients,
+            "hidden_ingredients": hidden_ingredients,
+            "ai_allergens": ai_allergens,
+        },
+    )
+
     allergens = model.detect_allergens(ai_ingredients or ingredients)
     merged_allergens = list(dict.fromkeys(allergens + [item for item in ai_allergens if item not in allergens]))
 
@@ -81,10 +94,13 @@ def predict_risk(payload: PredictRequest) -> PredictResponse:
     ai_explanation = generate_explanation(prediction, features, payload.ingredients)
     risk_reasoning = generate_risk_reasoning(prediction, features, payload.ingredients)
     recommendations = generate_recommendations(prediction, features, payload.ingredients)
+
+    logger.info("Predict risk input: %s", payload.dict())
     prediction["ai_explanation"] = ai_explanation
     prediction["risk_reasoning"] = risk_reasoning
     prediction["recommendations"] = recommendations
     prediction["confidence_percent"] = float(prediction["probability"] * 100)
+    logger.info("Predict risk output: %s", prediction)
     return PredictResponse(**prediction)
 
 
