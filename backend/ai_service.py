@@ -1,29 +1,26 @@
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import os
 import re
-from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
-from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+USE_GEMINI = os.getenv("USE_GEMINI", "true").lower() == "true"
 
-_client: Optional[genai.Client] = None
 logger = logging.getLogger(__name__)
+_client: Optional[genai.Client] = None
 
 FALLBACK_INGREDIENTS = ["ingredient detection unavailable"]
-
 
 COMMON_ALLERGENS = [
     "milk",
@@ -46,7 +43,6 @@ COMMON_ALLERGENS = [
     "lactose",
 ]
 
-
 E_NUMBER_MAP = {
     "e322": "lecithin",
     "e220": "sulphur dioxide",
@@ -60,6 +56,8 @@ E_NUMBER_MAP = {
 
 def _get_client() -> genai.Client:
     global _client
+    if not USE_GEMINI:
+        raise RuntimeError("USE_GEMINI is disabled")
     if _client is None:
         if not GEMINI_API_KEY:
             raise RuntimeError("GEMINI_API_KEY missing in environment or .env file")
@@ -79,40 +77,111 @@ def _extract_json(text: str) -> dict:
     return json.loads(cleaned)
 
 
-def _fallback_normalize(raw_text: str, fallback_ingredients: List[str]) -> dict:
+def _call_gemini(prompt: str) -> str:
+    logger.info("Gemini call requested")
+    client = _get_client()
+    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+    text = getattr(response, "text", None)
+    if text:
+        return text
+    return str(response)
+
+
+def _extract_ingredient_section(raw_text: str, lines: Optional[List[str]] = None) -> str:
+    text = "\n".join(lines) if lines else raw_text
+    if not text.strip():
+        return ""
+
+    patterns = [
+        r"ingredients?\s*[:\-]\s*(.+)",
+        r"composition\s*[:\-]\s*(.+)",
+        r"contains\s*[:\-]\s*(.+)",
+        r"склад\s*[:\-]\s*(.+)",
+        r"состав\s*[:\-]\s*(.+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return match.group(1)
+
+    return text
+
+
+def extract_ingredients_from_ocr_text(raw_text: str, lines: Optional[List[str]] = None) -> List[str]:
+    section = _extract_ingredient_section(raw_text, lines)
+    if not section.strip():
+        return []
+
+    normalized = section.replace(";", ",")
+    parts = re.split(r"[,\n\(\)\[\]{}]", normalized)
+
+    cleaned: List[str] = []
+    seen = set()
+    for part in parts:
+        token = part.strip().lower()
+        if not token:
+            continue
+
+        token = re.sub(r"\b\d+[\.,]?\d*%?\b", "", token)
+        token = re.sub(r"[^a-zа-яіїєґ0-9\-\s]", "", token, flags=re.IGNORECASE)
+        token = re.sub(r"\s+", " ", token).strip(" .-")
+
+        if not token or len(token) < 2:
+            continue
+        if token in {
+            "ingredients",
+            "composition",
+            "contains",
+            "may contain",
+            "trace",
+            "warning",
+        }:
+            continue
+
+        if token not in seen:
+            cleaned.append(token)
+            seen.add(token)
+
+    return cleaned
+
+
+def _rule_based_normalize(raw_text: str, fallback_ingredients: List[str]) -> dict:
     source = [item.strip() for item in fallback_ingredients if str(item).strip()]
-    if not source and raw_text.strip():
-        source = [token.strip() for token in re.split(r"[,;\n]", raw_text) if token.strip()]
+    if not source:
+        source = extract_ingredients_from_ocr_text(raw_text)
     if not source:
         source = FALLBACK_INGREDIENTS[:]
+
     normalized: List[str] = []
     breakdown: List[dict] = []
     hidden: List[str] = []
     allergens: List[str] = []
 
     text = " ".join(source).lower()
-    tokens = source
 
-    for token in tokens:
+    for token in source:
         base = token.lower()
         for code, name in E_NUMBER_MAP.items():
             if code in base:
                 base = base.replace(code, name)
                 hidden.append(name)
+
         replacements = {
             "casein": "milk protein",
             "whey": "milk protein",
-            "lecithin": "lecithin",
             "sodium benzoate": "preservative",
             "potassium sorbate": "preservative",
             "benzoate": "preservative",
         }
+
         normalized_name = base
         for key, value in replacements.items():
             if key in normalized_name:
                 normalized_name = value
                 if value == "preservative":
                     hidden.append(value)
+
         normalized_name = normalized_name.strip(" .")
         if normalized_name and normalized_name not in normalized:
             normalized.append(normalized_name)
@@ -132,69 +201,17 @@ def _fallback_normalize(raw_text: str, fallback_ingredients: List[str]) -> dict:
     }
 
 
-def _call_gemini(prompt: str) -> str:
-    client = _get_client()
-    response = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-    text = getattr(response, "text", None)
-    if text:
-        return text
-    return str(response)
-
-
-def extract_ingredients_from_image_with_ai(image_bytes: bytes) -> dict:
-    prompt = """
-You are a food-label OCR assistant.
-
-Read the label image and extract the ingredient list as accurately as possible.
-Return ONLY valid JSON with this schema:
-{
-  "raw_text": "string",
-  "ingredients": ["string"]
-}
-
-Rules:
-- Focus on ingredients or composition text from the package.
-- Preserve ingredient names, but normalize obvious OCR mistakes when needed.
-- If the image does not clearly show a label, return the best visible text and an empty ingredients list.
-""".strip()
-
-    try:
-        image = Image.open(BytesIO(image_bytes)).convert("RGB")
-        buffer = BytesIO()
-        image.save(buffer, format="PNG")
-        image_part = types.Part.from_bytes(data=buffer.getvalue(), mime_type="image/png")
-        response = _get_client().models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[
-                types.UserContent(
-                    parts=[
-                        types.Part.from_text(text=prompt),
-                        image_part,
-                    ]
-                )
-            ],
-        )
-        data = _extract_json(getattr(response, "text", str(response)))
-        raw_text = str(data.get("raw_text", "")).strip()
-        ingredients = [str(item).strip() for item in data.get("ingredients", []) if str(item).strip()]
-        if not ingredients:
-            ingredients = FALLBACK_INGREDIENTS[:]
-        logger.info("Gemini OCR response: raw_text=%s ingredients=%s", raw_text[:500], ingredients)
-        return {
-            "raw_text": raw_text or ", ".join(ingredients),
-            "ingredients": ingredients,
-        }
-    except Exception:
-        logger.exception("Gemini OCR extraction failed")
-        return {"raw_text": "", "ingredients": FALLBACK_INGREDIENTS[:]}
-
-
 def analyze_ingredients_with_ai(raw_text: str, fallback_ingredients: List[str]) -> dict:
+    base = _rule_based_normalize(raw_text, fallback_ingredients)
+
+    if not USE_GEMINI:
+        logger.info("Gemini disabled; using rule-based ingredient normalization")
+        return base
+
     prompt = f"""
 You are a food safety assistant.
-
-Normalize the OCR text into structured ingredients and detect hidden ingredients and allergens.
-Return ONLY valid JSON with this schema:
+Normalize the ingredient list, identify hidden ingredients, and detect allergens.
+Return ONLY valid JSON:
 {{
   "ai_ingredients": ["string"],
   "hidden_ingredients": ["string"],
@@ -205,14 +222,8 @@ Return ONLY valid JSON with this schema:
 OCR text:
 {raw_text}
 
-Fallback ingredients:
-{fallback_ingredients}
-
-Rules:
-- Normalize ingredient names to human-friendly names.
-- Expand additives like E322 or sodium benzoate into clearer names if possible.
-- Detect hidden ingredients such as preservatives, emulsifiers, colorants, or protein sources.
-- Detect allergens using food knowledge, not just exact string matching.
+Rule-based ingredients:
+{base.get("ai_ingredients", [])}
 """.strip()
 
     try:
@@ -220,27 +231,24 @@ Rules:
         data = _extract_json(text)
         if not isinstance(data, dict):
             raise ValueError("Gemini response was not a JSON object")
-        data.setdefault("ai_ingredients", fallback_ingredients)
-        data.setdefault("hidden_ingredients", [])
-        data.setdefault("ai_allergens", [])
-        data.setdefault("ingredient_breakdown", [])
-        logger.info(
-            "Gemini ingredient analysis: ai_ingredients=%s hidden=%s allergens=%s",
-            data.get("ai_ingredients", []),
-            data.get("hidden_ingredients", []),
-            data.get("ai_allergens", []),
-        )
+        data.setdefault("ai_ingredients", base.get("ai_ingredients", []))
+        data.setdefault("hidden_ingredients", base.get("hidden_ingredients", []))
+        data.setdefault("ai_allergens", base.get("ai_allergens", []))
+        data.setdefault("ingredient_breakdown", base.get("ingredient_breakdown", []))
+        logger.info("Gemini ingredient normalization success")
         return data
     except Exception:
-        logger.exception("Gemini ingredient normalization failed; using fallback normalization")
-        return _fallback_normalize(raw_text, fallback_ingredients)
+        logger.exception("Gemini ingredient normalization failed; using rule-based output")
+        return base
 
 
 def generate_explanation(prediction: Dict, features: Dict[str, float], ingredients: List[str]) -> str:
+    if not USE_GEMINI:
+        return _fallback_explanation(prediction, features)
+
     prompt = f"""
 You are a food safety advisor.
-Explain the contamination risk in one short, simple sentence for a student demo.
-Avoid technical terms. Mention the strongest reasons if relevant.
+Explain the contamination risk in one short, simple sentence.
 Return plain text only.
 
 Prediction: {prediction}
@@ -252,16 +260,17 @@ Ingredients: {ingredients}
         text = _call_gemini(prompt).strip()
         return text if text else _fallback_explanation(prediction, features)
     except Exception:
+        logger.exception("Gemini explanation failed; using fallback")
         return _fallback_explanation(prediction, features)
 
 
 def generate_risk_reasoning(prediction: Dict, features: Dict[str, float], ingredients: List[str]) -> str:
+    if not USE_GEMINI:
+        return _fallback_risk_reasoning(prediction, features)
+
     prompt = f"""
 You are a food safety analyst.
-Give concise reasoning in 2 short lines:
-1) Why this risk level was predicted
-2) Which factors likely contributed most
-
+Give concise reasoning in 2 short lines.
 Return plain text only.
 
 Prediction: {prediction}
@@ -273,23 +282,23 @@ Ingredients: {ingredients}
         text = _call_gemini(prompt).strip()
         return text if text else _fallback_risk_reasoning(prediction, features)
     except Exception:
+        logger.exception("Gemini risk reasoning failed; using fallback")
         return _fallback_risk_reasoning(prediction, features)
 
 
 def generate_recommendations(prediction: Dict, features: Dict[str, float], ingredients: List[str]) -> List[str]:
+    if not USE_GEMINI:
+        return _fallback_recommendations(prediction, features, ingredients)
+
     prompt = f"""
 You are a food safety advisor.
 Generate 3 short, practical recommendations for the user.
-Return ONLY valid JSON in this format:
+Return ONLY valid JSON:
 {{"recommendations": ["string", "string", "string"]}}
 
 Prediction: {prediction}
 Features: {features}
 Ingredients: {ingredients}
-
-Rules:
-- Keep each recommendation short and actionable.
-- Focus on storage, ingredient choice, and risk reduction.
 """.strip()
 
     try:
@@ -299,7 +308,7 @@ Rules:
         if isinstance(recommendations, list) and recommendations:
             return [str(item).strip() for item in recommendations if str(item).strip()][:3]
     except Exception:
-        pass
+        logger.exception("Gemini recommendations failed; using fallback")
 
     return _fallback_recommendations(prediction, features, ingredients)
 
@@ -320,7 +329,7 @@ def _fallback_risk_reasoning(prediction: Dict, features: Dict[str, float]) -> st
 
 def _fallback_recommendations(prediction: Dict, features: Dict[str, float], ingredients: List[str]) -> List[str]:
     recommendations = [
-        "Store food below 5°C when possible.",
+        "Store food below 5 C when possible.",
         "Choose products with fewer preservatives and additives.",
         "Check allergen labels carefully before consuming.",
     ]

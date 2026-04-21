@@ -5,14 +5,9 @@ pandas
 numpy
 shap
 joblib
-pytesseract
-opencv-python
-pillow
 python-multipart
 streamlit
 requests
 matplotlib
 python-dotenv
 google-genai
-rapidocr
-onnxruntime

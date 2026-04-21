@@ -1,22 +1,24 @@
 # Food Safety Risk Prediction App
 
-Hybrid AI demo for food label safety analysis.
+Hybrid AI assistant for food label safety analysis.
 
 ## Overview
 
 - Scan a food label image
-- Extract ingredients with OCR
-- Normalize ingredients with Gemini AI
+- Extract ingredients with Azure Vision Read OCR (primary)
+- Normalize ingredients with rule-based logic and optional Gemini enhancement
 - Predict contamination risk with a hybrid ensemble model
 - Explain the prediction with SHAP + Gemini
-- Show everything in a tabbed Streamlit dashboard
+- Guide users through a step-by-step assistant-style Streamlit experience
 
-## Frontend tabs
+## Frontend guided flow
 
-- Scan
-- Results
-- AI Insights
-- About
+- Login and onboarding
+- Profile setup (health conditions and allergies)
+- Scan (camera or upload)
+- Ingredient confirmation and edit
+- Translation to user preferred language
+- Risk analysis and personalized result cards
 
 ## Personalization
 
@@ -36,14 +38,15 @@ Hybrid AI demo for food label safety analysis.
 
 - FastAPI
 - Streamlit
-- OpenCV + pytesseract
+- Azure Vision Read API
 - Scikit-learn
 - SHAP
-- Gemini AI
+- Gemini AI (optional, non-critical path)
 
 ## Deployment note
 
-- Render must install `tesseract-ocr` during build for OCR to work reliably.
+- OCR is Azure-primary with bounded polling and a lightweight local text fallback.
+- Gemini is optional for ingredient intelligence and explanations, never required for endpoint success.
 
 ## Results shown in the app
 
@@ -75,6 +78,9 @@ Hybrid AI demo for food label safety analysis.
 
 - `GEMINI_API_KEY`
 - `GEMINI_MODEL` (optional, default: `gemini-2.5-flash`)
+- `AZURE_VISION_ENDPOINT`
+- `AZURE_VISION_KEY`
+- `USE_GEMINI` (optional, default: `true`)
 - `API_BASE` for the frontend backend URL (also supported via Streamlit secrets)
 
 ## Run locally
@@ -97,7 +103,8 @@ Backend on Render:
 
 - Connect the repo on Render.
 - Use the provided `render.yaml` or the start command: `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`.
-- Add `GEMINI_API_KEY` as an environment variable.
+- Add `AZURE_VISION_ENDPOINT` and `AZURE_VISION_KEY` environment variables.
+- Add `GEMINI_API_KEY` only if Gemini enhancements are desired.
 
 Frontend on Streamlit Cloud:
 
@@ -114,5 +121,6 @@ Mobile-friendly usage:
 
 - Local backend is running.
 - Local frontend is running.
-- Gemini AI integration is active.
-- UI is tabbed, demo-ready, and aligned with the paper.
+- OCR pipeline is Azure-primary with fallback that still returns structured output.
+- Gemini is optional and non-blocking; rule-based fallback always runs.
+- UI is guided, assistant-like, and aligned with the paper.

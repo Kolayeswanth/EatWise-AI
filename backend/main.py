@@ -6,7 +6,13 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.ai_service import analyze_ingredients_with_ai, generate_explanation, generate_recommendations, generate_risk_reasoning
+from backend.ai_service import (
+    analyze_ingredients_with_ai,
+    extract_ingredients_from_ocr_text,
+    generate_explanation,
+    generate_recommendations,
+    generate_risk_reasoning,
+)
 from backend.ml_service import HybridRiskModel
 from backend.ocr_service import extract_ingredients_from_image
 from backend.schemas import AnalyzeImageResponse, ExplainResponse, PredictRequest, PredictResponse
@@ -25,17 +31,6 @@ app.add_middleware(
 )
 
 model = HybridRiskModel()
-
-
-def _is_placeholder_ocr(ingredients: list[str], raw_text: str) -> bool:
-    tokens = [str(x).strip().lower() for x in ingredients if str(x).strip()]
-    if tokens == ["ingredient detection unavailable"]:
-        return True
-    if not tokens and "ingredient detection unavailable" in raw_text.lower():
-        return True
-    return False
-
-
 @app.get("/")
 def health() -> dict:
     return {"status": "ok", "service": "food-safety-api"}
@@ -50,24 +45,24 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeImageResponse:
     if not content:
         raise HTTPException(status_code=400, detail="Empty image file.")
 
-    raw_text, ingredients = extract_ingredients_from_image(content)
+    ocr_result = extract_ingredients_from_image(content)
+    raw_text = str(ocr_result.get("raw_text", ""))
+    lines = [str(x) for x in ocr_result.get("lines", []) if str(x).strip()]
+    source = str(ocr_result.get("source", "fallback"))
 
-    if ingredients and not _is_placeholder_ocr(ingredients, raw_text):
-        ai_result = analyze_ingredients_with_ai(raw_text=raw_text, fallback_ingredients=ingredients)
-    else:
-        ai_result = {
-            "ai_ingredients": [],
-            "hidden_ingredients": [],
-            "ai_allergens": [],
-            "ingredient_breakdown": [],
-        }
+    ingredients = extract_ingredients_from_ocr_text(raw_text=raw_text, lines=lines)
+    if not ingredients:
+        ingredients = ["ingredient detection unavailable"]
+    ai_result = analyze_ingredients_with_ai(raw_text=raw_text, fallback_ingredients=ingredients)
+
     ai_ingredients = ai_result.get("ai_ingredients", ingredients) or ingredients
     hidden_ingredients = ai_result.get("hidden_ingredients", [])
     ai_allergens = ai_result.get("ai_allergens", [])
     ingredient_breakdown = ai_result.get("ingredient_breakdown", [])
 
     logger.info(
-        "Analyze image input: raw_text=%s ingredients=%s ai_result=%s",
+        "Analyze image input: source=%s raw_text=%s ingredients=%s ai_result=%s",
+        source,
         raw_text[:500],
         ingredients,
         {
@@ -82,6 +77,8 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeImageResponse:
 
     return AnalyzeImageResponse(
         raw_text=raw_text,
+        lines=lines,
+        source=source,
         ingredients=ingredients,
         ai_ingredients=ai_ingredients,
         hidden_ingredients=hidden_ingredients,
@@ -109,6 +106,8 @@ def predict_risk(payload: PredictRequest) -> PredictResponse:
     prediction["risk_reasoning"] = risk_reasoning
     prediction["recommendations"] = recommendations
     prediction["confidence_percent"] = float(prediction["probability"] * 100)
+    prediction["risk_score"] = float(prediction["probability"])
+    prediction["risk_level"] = str(prediction["risk_classification"])
     logger.info("Predict risk output: %s", prediction)
     return PredictResponse(**prediction)
 

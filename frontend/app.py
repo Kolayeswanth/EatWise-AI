@@ -320,6 +320,7 @@ def init_state() -> None:
         "scan_image_name": "",
         "scan_image_bytes": b"",
         "scan_image_mime": "image/jpeg",
+        "ocr_source": "fallback",
         "show_results": False,
         "user_profile": {
             "name": "",
@@ -742,7 +743,7 @@ def render_scan_step(api_base: str, client, model: str) -> None:
                     status.write("OCR is taking a moment, refining detected text...")
                 except RequestException as exc:
                     status.update(label="Scan failed", state="error")
-                    st.error("Backend not reachable")
+                    st.error("Unable to process. Please try again.")
                     st.caption(str(exc))
                     st.session_state.ingredients = []
                     st.session_state.ai_ingredients = []
@@ -784,8 +785,10 @@ def render_scan_step(api_base: str, client, model: str) -> None:
                     st.session_state.allergens = payload.get("allergens", [])
                     st.session_state.ai_allergens = payload.get("ai_allergens", [])
                     st.session_state.ingredient_editor = ", ".join(ingredients)
+                    st.session_state.ocr_source = payload.get("source", "fallback")
                     debug_log(f"Frontend OCR raw_text={raw_text}")
                     debug_log(f"Frontend AI ingredients={ingredients}")
+                    debug_log(f"Frontend OCR source={st.session_state.ocr_source}")
 
                     st.session_state.workflow_step = max(st.session_state.workflow_step, 2)
                     status.update(label="Scan complete", state="complete")
@@ -829,7 +832,7 @@ def render_risk_context() -> None:
 def render_confirm_step(api_base: str, client, model: str) -> None:
     st.markdown("<div class='glass'>", unsafe_allow_html=True)
     st.subheader("Step 2 - Confirm ingredients")
-    st.caption("Review and edit before analysis. This avoids OCR mistakes.")
+    st.caption("I've extracted the ingredients. Please review and edit if needed.")
 
     st.text_area(
         "Detected Ingredients",
@@ -862,7 +865,7 @@ def render_confirm_step(api_base: str, client, model: str) -> None:
                 try:
                     run_full_prediction(api_base=api_base, client=client, model=model, ingredients=final_items)
                 except RequestException as exc:
-                    st.error("Backend not reachable")
+                    st.error("Unable to process. Please try again.")
                     st.caption(str(exc))
                 except Exception as exc:
                     st.error("Analysis could not be completed right now.")
@@ -925,7 +928,7 @@ def render_analysis_step(api_base: str, client, model: str) -> None:
                     run_full_prediction(api_base=api_base, client=client, model=model, ingredients=ingredients)
                     st.success("Risk analysis complete.")
                 except RequestException as exc:
-                    st.error("Backend not reachable")
+                    st.error("Unable to process. Please try again.")
                     st.caption(str(exc))
 
     st.markdown("</div>", unsafe_allow_html=True)

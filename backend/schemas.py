@@ -12,6 +12,8 @@ class PredictRequest(BaseModel):
 
 class AnalyzeImageResponse(BaseModel):
     raw_text: str
+    lines: List[str] = Field(default_factory=list)
+    source: str = "fallback"
     ingredients: List[str]
     ai_ingredients: List[str] = Field(default_factory=list)
     hidden_ingredients: List[str] = Field(default_factory=list)
@@ -21,6 +23,8 @@ class AnalyzeImageResponse(BaseModel):
 
 
 class PredictResponse(BaseModel):
+    risk_score: float = 0.0
+    risk_level: str = ""
     probability: float
     risk_classification: str
     class_probabilities: dict
