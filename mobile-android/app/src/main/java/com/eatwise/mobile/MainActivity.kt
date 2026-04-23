@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
+import androidx.core.content.FileProvider
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
@@ -16,11 +17,13 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
+import java.io.File
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var webView: WebView
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private var pendingCameraImageUri: Uri? = null
 
     private val filePickerLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val callback = filePathCallback
@@ -29,11 +32,13 @@ class MainActivity : ComponentActivity() {
         }
 
         val dataUri: Uri? = result.data?.data
-        if (dataUri != null) {
-            callback.onReceiveValue(arrayOf(dataUri))
+        val finalUri = dataUri ?: pendingCameraImageUri
+        if (finalUri != null) {
+            callback.onReceiveValue(arrayOf(finalUri))
         } else {
             callback.onReceiveValue(null)
         }
+        pendingCameraImageUri = null
         filePathCallback = null
     }
 
@@ -90,7 +95,18 @@ class MainActivity : ComponentActivity() {
                 contentSelectionIntent.addCategory(Intent.CATEGORY_OPENABLE)
                 contentSelectionIntent.type = "image/*"
 
+                val cameraImageFile = createTempImageFile()
+                val cameraImageUri = FileProvider.getUriForFile(
+                    this@MainActivity,
+                    "${packageName}.fileprovider",
+                    cameraImageFile
+                )
+                pendingCameraImageUri = cameraImageUri
+
                 val cameraIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, cameraImageUri)
+                cameraIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                cameraIntent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
 
                 val chooserIntent = Intent(Intent.ACTION_CHOOSER)
                 chooserIntent.putExtra(Intent.EXTRA_INTENT, contentSelectionIntent)
@@ -106,6 +122,10 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private fun createTempImageFile(): File {
+        return File.createTempFile("eatwise_capture_", ".jpg", cacheDir)
     }
 
     private fun promptForUrl(defaultValue: String) {
