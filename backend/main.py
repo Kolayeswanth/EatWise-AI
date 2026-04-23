@@ -13,12 +13,16 @@ from backend.ai_service import (
     generate_recommendations,
     generate_risk_reasoning,
 )
+from backend.food_ai_service import detect_food_names, generate_food_ingredients
 from backend.db import create_user, get_user, update_user
 from backend.ml_service import HybridRiskModel
 from backend.ocr_service import extract_ingredients_from_image
 from backend.schemas import (
     AnalyzeImageResponse,
+    DetectFoodNameResponse,
     ExplainResponse,
+    FoodIngredientsRequest,
+    FoodIngredientsResponse,
     PredictRequest,
     PredictResponse,
     UserCreateRequest,
@@ -137,6 +141,38 @@ async def analyze_image(file: UploadFile = File(...)) -> AnalyzeImageResponse:
         ai_allergens=ai_allergens,
         ingredient_breakdown=ingredient_breakdown,
     )
+
+
+@app.post("/detect-food-name", response_model=DetectFoodNameResponse)
+async def detect_food_name(file: UploadFile = File(...)) -> DetectFoodNameResponse:
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Upload a valid image file.")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty image file.")
+
+    try:
+        food_names = detect_food_names(content)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return DetectFoodNameResponse(food_names=food_names)
+
+
+@app.post("/food-ingredients", response_model=FoodIngredientsResponse)
+def food_ingredients(payload: FoodIngredientsRequest) -> FoodIngredientsResponse:
+    food_name = str(payload.food_name).strip()
+    language = str(payload.language or "English").strip() or "English"
+    if not food_name:
+        raise HTTPException(status_code=400, detail="food_name is required")
+
+    try:
+        ingredients = generate_food_ingredients(food_name=food_name, language=language)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return FoodIngredientsResponse(food_name=food_name, language=language, ingredients=ingredients)
 
 
 @app.post("/predict-risk", response_model=PredictResponse)

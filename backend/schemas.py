@@ -61,3 +61,18 @@ class ExplainResponse(BaseModel):
     feature_importance: List[dict]
     summary: str
     shap_base_value: Optional[float] = None
+
+
+class DetectFoodNameResponse(BaseModel):
+    food_names: List[str] = Field(default_factory=list)
+
+
+class FoodIngredientsRequest(BaseModel):
+    food_name: str = ""
+    language: str = "English"
+
+
+class FoodIngredientsResponse(BaseModel):
+    food_name: str = ""
+    language: str = "English"
+    ingredients: List[str] = Field(default_factory=list)

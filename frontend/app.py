@@ -154,6 +154,23 @@ def api_predict_risk(api_base: str, ingredients: List[str], vhi: float, cas: flo
     return response.json()
 
 
+def api_detect_food_name(api_base: str, image_name: str, image_bytes: bytes, mime_type: str) -> Dict:
+    files = {"file": (image_name, image_bytes, mime_type)}
+    response = requests.post(f"{api_base}/detect-food-name", files=files, timeout=120)
+    response.raise_for_status()
+    return response.json()
+
+
+def api_food_ingredients(api_base: str, food_name: str, language: str) -> Dict:
+    payload = {
+        "food_name": food_name,
+        "language": language,
+    }
+    response = requests.post(f"{api_base}/food-ingredients", json=payload, timeout=90)
+    response.raise_for_status()
+    return response.json()
+
+
 def api_user_create(api_base: str, payload: Dict) -> Dict:
     response = requests.post(f"{api_base}/user/create", json=payload, timeout=60)
     response.raise_for_status()
@@ -247,9 +264,12 @@ def init_state() -> None:
             "allergies": [],
         },
         "scan_source": "upload",
+        "scan_mode": "label",
         "scan_image_name": "",
         "scan_image_bytes": b"",
         "scan_image_mime": "image/jpeg",
+        "food_name_candidates": [],
+        "selected_food_name": "",
         "ocr_source": "fallback",
         "user_id": "",
         "show_user_id_card": False,
@@ -739,7 +759,15 @@ def render_step_1(api_base: str) -> None:
 def render_step_2(api_base: str) -> None:
     st.markdown("<div class='panel'>", unsafe_allow_html=True)
     st.subheader("Step 2 - Scan")
-    st.caption("Upload a label image or use the camera.")
+    st.caption("Choose how you want to scan: food label text or a real food item image.")
+
+    selected_mode_label = st.radio(
+        "Scan Mode",
+        options=["Scan Food Label", "Scan Food Item"],
+        index=0 if st.session_state.scan_mode == "label" else 1,
+        horizontal=True,
+    )
+    st.session_state.scan_mode = "label" if selected_mode_label == "Scan Food Label" else "food_item"
 
     col1, col2 = st.columns(2)
     with col1:
@@ -758,6 +786,7 @@ def render_step_2(api_base: str) -> None:
         if camera_photo is not None:
             selected_name = "camera_capture.jpg"
             selected_bytes = camera_photo.getvalue()
+            selected_mime = "image/jpeg"
             st.image(selected_bytes, caption="Captured image", use_container_width=True)
     else:
         uploaded = st.file_uploader("Upload image", type=["png", "jpg", "jpeg", "webp"])
@@ -767,32 +796,116 @@ def render_step_2(api_base: str) -> None:
             selected_mime = uploaded.type or "image/jpeg"
             st.image(selected_bytes, caption="Uploaded image", use_container_width=True)
 
-    if st.button("Scan Label", type="primary", use_container_width=True):
-        if not selected_bytes:
-            st.warning("Please upload or capture an image first.")
-        else:
-            st.session_state.scan_image_name = selected_name
-            st.session_state.scan_image_bytes = selected_bytes
-            st.session_state.scan_image_mime = selected_mime
+    if st.session_state.scan_mode == "label":
+        if st.button("Scan Label", type="primary", use_container_width=True):
+            if not selected_bytes:
+                st.warning("Please upload or capture an image first.")
+            else:
+                st.session_state.scan_image_name = selected_name
+                st.session_state.scan_image_bytes = selected_bytes
+                st.session_state.scan_image_mime = selected_mime
 
-            with st.spinner("Scanning your food label..."):
-                st.progress(15, text="Starting OCR...")
-                time.sleep(0.25)
-                try:
-                    payload = api_analyze_image(api_base, selected_name, selected_bytes, selected_mime)
-                except RequestException:
-                    st.error("Unable to process. Please try again.")
-                    return
+                with st.spinner("Scanning your food label..."):
+                    st.progress(15, text="Starting OCR...")
+                    time.sleep(0.25)
+                    try:
+                        payload = api_analyze_image(api_base, selected_name, selected_bytes, selected_mime)
+                    except RequestException:
+                        st.error("Unable to process. Please try again.")
+                        return
 
-            ingredients = clean_ingredients_for_ui([str(x) for x in (payload.get("ai_ingredients") or payload.get("ingredients", []))])
-            st.session_state.ingredients = ingredients
-            st.session_state.display_ingredients = ingredients
-            st.session_state.ingredient_editor = ", ".join(ingredients)
-            st.session_state.ocr_source = str(payload.get("source", "fallback"))
-            st.session_state.allergens = [str(x).lower() for x in payload.get("allergens", []) if str(x).strip()]
-            st.session_state.prediction = None
-            st.session_state.prediction_signature = ""
-            step_jump(3)
+                ingredients = clean_ingredients_for_ui([str(x) for x in (payload.get("ai_ingredients") or payload.get("ingredients", []))])
+                st.session_state.ingredients = ingredients
+                st.session_state.display_ingredients = ingredients
+                st.session_state.ingredient_editor = ", ".join(ingredients)
+                st.session_state.ocr_source = str(payload.get("source", "fallback"))
+                st.session_state.allergens = [str(x).lower() for x in payload.get("allergens", []) if str(x).strip()]
+                st.session_state.food_name_candidates = []
+                st.session_state.selected_food_name = ""
+                st.session_state.prediction = None
+                st.session_state.prediction_signature = ""
+                step_jump(3)
+    else:
+        if st.button("Detect Food Name", type="primary", use_container_width=True):
+            if not selected_bytes:
+                st.warning("Please upload or capture an image first.")
+            else:
+                st.session_state.scan_image_name = selected_name
+                st.session_state.scan_image_bytes = selected_bytes
+                st.session_state.scan_image_mime = selected_mime
+
+                with st.spinner("Understanding your food..."):
+                    st.progress(20, text="Detecting food names...")
+                    time.sleep(0.2)
+                    try:
+                        payload = api_detect_food_name(api_base, selected_name, selected_bytes, selected_mime)
+                    except RequestException:
+                        st.error("Unable to process. Please try again.")
+                        return
+
+                names = [str(x).strip() for x in payload.get("food_names", []) if str(x).strip()]
+                deduped: List[str] = []
+                seen = set()
+                for item in names:
+                    lowered = item.lower()
+                    if lowered in seen:
+                        continue
+                    seen.add(lowered)
+                    deduped.append(item)
+                    if len(deduped) >= 3:
+                        break
+
+                st.session_state.food_name_candidates = deduped
+                st.session_state.selected_food_name = ""
+
+                if not deduped:
+                    st.warning("Could not confidently detect food names. Try a clearer image.")
+
+        candidates = st.session_state.food_name_candidates
+        if candidates:
+            st.markdown("<div class='section-tag'>Is this your food?</div>", unsafe_allow_html=True)
+            cols = st.columns(len(candidates))
+            for idx, candidate in enumerate(candidates):
+                with cols[idx]:
+                    if st.button(candidate.title(), key=f"food_candidate_{idx}_{candidate}", use_container_width=True):
+                        st.session_state.selected_food_name = candidate
+                        preferred_language = str(st.session_state.profile.get("preferred_language", "English"))
+
+                        # Keep model pipeline stable by generating canonical ingredients in English.
+                        generation_language = "English"
+
+                        with st.spinner("Getting ingredients..."):
+                            st.progress(35, text=f"Generating ingredients for {candidate}...")
+                            time.sleep(0.2)
+                            try:
+                                ingredient_payload = api_food_ingredients(
+                                    api_base=api_base,
+                                    food_name=candidate,
+                                    language=generation_language,
+                                )
+                            except RequestException:
+                                st.error("Unable to process. Please try again.")
+                                return
+
+                        generated = [str(x) for x in ingredient_payload.get("ingredients", []) if str(x).strip()]
+                        cleaned = clean_ingredients_for_ui(generated)
+                        if not cleaned:
+                            st.warning("No usable ingredients were generated. Try another option.")
+                            return
+
+                        st.session_state.ingredients = cleaned
+                        st.session_state.display_ingredients = cleaned
+                        st.session_state.ingredient_editor = ", ".join(cleaned)
+                        st.session_state.translation_note = (
+                            "Ingredients generated from food image and prepared for translation in the next step."
+                            if preferred_language.lower() != "english"
+                            else "Ingredients generated from food image."
+                        )
+                        st.session_state.ocr_source = "food-item-ai"
+                        st.session_state.allergens = []
+                        st.session_state.prediction = None
+                        st.session_state.prediction_signature = ""
+                        step_jump(3)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1027,9 +1140,12 @@ def render_step_6(api_base: str) -> None:
     with col2:
         if st.button("Analyze Another Label", type="primary", use_container_width=True):
             st.session_state.step = 2
+            st.session_state.scan_mode = "label"
             st.session_state.ingredients = []
             st.session_state.display_ingredients = []
             st.session_state.ingredient_editor = ""
+            st.session_state.food_name_candidates = []
+            st.session_state.selected_food_name = ""
             st.session_state.prediction = None
             st.session_state.prediction_signature = ""
             st.session_state.translation_note = ""
